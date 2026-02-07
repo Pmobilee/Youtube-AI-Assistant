@@ -1,0 +1,19 @@
+{
+  "name": "nora-writer",
+  "version": "1.0.0",
+  "description": "Video script workspace for Nora — collaborative writing with Kona AI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "author": "Kona",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "marked": "^15.0.6"
+  }
+}

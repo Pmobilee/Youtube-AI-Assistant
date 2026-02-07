@@ -1,0 +1,387 @@
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const Database = require('better-sqlite3');
+const Anthropic = require('@anthropic-ai/sdk');
+
+const app = express();
+const PORT = 3000;
+
+// --- Database Setup ---
+const dataDir = path.join(__dirname, 'data');
+const uploadsDir = path.join(__dirname, 'uploads');
+fs.mkdirSync(dataDir, { recursive: true });
+fs.mkdirSync(uploadsDir, { recursive: true });
+
+const db = new Database(path.join(dataDir, 'nora-writer.db'));
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS videos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    status TEXT DEFAULT 'draft',
+    thumbnail TEXT,
+    script_content TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    voiceover_notes TEXT DEFAULT '',
+    thumbnail_ideas TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS video_memory (
+    video_id INTEGER PRIMARY KEY,
+    summary TEXT DEFAULT '',
+    key_decisions TEXT DEFAULT '[]',
+    style_notes TEXT DEFAULT '[]',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+  );
+`);
+
+// Global memory
+const globalMemoryPath = path.join(dataDir, 'global_memory.json');
+if (!fs.existsSync(globalMemoryPath)) {
+  fs.writeFileSync(globalMemoryPath, JSON.stringify({
+    preferences: [],
+    common_patterns: [],
+    style_notes: []
+  }, null, 2));
+}
+
+// --- Anthropic Client ---
+const anthropic = new Anthropic();
+
+// --- Middleware ---
+app.use(express.json({ limit: '10mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/uploads', express.static(uploadsDir));
+
+// --- File Upload ---
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const videoId = req.params.videoId;
+    const dir = path.join(uploadsDir, String(videoId));
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+    cb(null, name);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+
+// ============ API ROUTES ============
+
+// --- Videos ---
+app.get('/api/videos', (req, res) => {
+  const videos = db.prepare(`
+    SELECT v.*, 
+      (SELECT COUNT(*) FROM messages WHERE video_id = v.id) as message_count
+    FROM videos v ORDER BY v.updated_at DESC
+  `).all();
+  res.json(videos);
+});
+
+app.post('/api/videos', (req, res) => {
+  const { title } = req.body;
+  const result = db.prepare('INSERT INTO videos (title) VALUES (?)').run(title || 'Untitled Video');
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(result.lastInsertRowid);
+  // Init memory
+  db.prepare('INSERT INTO video_memory (video_id) VALUES (?)').run(video.id);
+  res.json(video);
+});
+
+app.get('/api/videos/:id', (req, res) => {
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Not found' });
+  const uploads_list = db.prepare('SELECT * FROM uploads WHERE video_id = ? ORDER BY created_at DESC').all(video.id);
+  const memory = db.prepare('SELECT * FROM video_memory WHERE video_id = ?').get(video.id);
+  res.json({ ...video, uploads: uploads_list, memory });
+});
+
+app.put('/api/videos/:id', (req, res) => {
+  const { title, status, script_content, description, voiceover_notes, thumbnail_ideas } = req.body;
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Not found' });
+
+  db.prepare(`
+    UPDATE videos SET 
+      title = COALESCE(?, title),
+      status = COALESCE(?, status),
+      script_content = COALESCE(?, script_content),
+      description = COALESCE(?, description),
+      voiceover_notes = COALESCE(?, voiceover_notes),
+      thumbnail_ideas = COALESCE(?, thumbnail_ideas),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(title, status, script_content, description, voiceover_notes, thumbnail_ideas, req.params.id);
+
+  const updated = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
+  res.json(updated);
+});
+
+app.delete('/api/videos/:id', (req, res) => {
+  db.prepare('DELETE FROM videos WHERE id = ?').run(req.params.id);
+  // Clean up upload files
+  const dir = path.join(uploadsDir, String(req.params.id));
+  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true });
+  res.json({ success: true });
+});
+
+// --- Messages / Chat ---
+app.get('/api/videos/:videoId/messages', (req, res) => {
+  const messages = db.prepare('SELECT * FROM messages WHERE video_id = ? ORDER BY created_at ASC')
+    .all(req.params.videoId);
+  res.json(messages);
+});
+
+app.post('/api/videos/:videoId/chat', async (req, res) => {
+  const { message } = req.body;
+  const videoId = req.params.videoId;
+
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  // Save user message
+  db.prepare('INSERT INTO messages (video_id, role, content) VALUES (?, ?, ?)')
+    .run(videoId, 'user', message);
+
+  // Get conversation history
+  let messages = db.prepare('SELECT role, content FROM messages WHERE video_id = ? ORDER BY created_at ASC')
+    .all(videoId);
+
+  // Get memory
+  const memory = db.prepare('SELECT * FROM video_memory WHERE video_id = ?').get(videoId);
+  const globalMemory = JSON.parse(fs.readFileSync(globalMemoryPath, 'utf-8'));
+
+  // Auto-summarize if >50 messages
+  if (messages.length > 50) {
+    await summarizeConversation(videoId, messages, memory);
+    messages = db.prepare('SELECT role, content FROM messages WHERE video_id = ? ORDER BY created_at ASC')
+      .all(videoId);
+  }
+
+  // Build system prompt
+  const systemPrompt = buildSystemPrompt(video, memory, globalMemory);
+
+  // Format messages for Anthropic
+  const apiMessages = messages.map(m => ({
+    role: m.role === 'user' ? 'user' : 'assistant',
+    content: m.content
+  }));
+
+  try {
+    // Stream response
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    });
+
+    const stream = anthropic.messages.stream({
+      model: 'claude-opus-4-0-20250514',
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: apiMessages
+    });
+
+    let fullResponse = '';
+
+    stream.on('text', (text) => {
+      fullResponse += text;
+      res.write(`data: ${JSON.stringify({ type: 'text', content: text })}\n\n`);
+    });
+
+    stream.on('end', () => {
+      // Save assistant message
+      db.prepare('INSERT INTO messages (video_id, role, content) VALUES (?, ?, ?)')
+        .run(videoId, 'assistant', fullResponse);
+
+      // Update video timestamp
+      db.prepare('UPDATE videos SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(videoId);
+
+      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      res.end();
+    });
+
+    stream.on('error', (err) => {
+      console.error('Stream error:', err);
+      res.write(`data: ${JSON.stringify({ type: 'error', content: err.message })}\n\n`);
+      res.end();
+    });
+
+  } catch (err) {
+    console.error('Chat error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Uploads ---
+app.post('/api/videos/:videoId/upload', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  db.prepare('INSERT INTO uploads (video_id, filename, original_name, mime_type) VALUES (?, ?, ?, ?)')
+    .run(req.params.videoId, req.file.filename, req.file.originalname, req.file.mimetype);
+
+  res.json({
+    filename: req.file.filename,
+    original_name: req.file.originalname,
+    url: `/uploads/${req.params.videoId}/${req.file.filename}`
+  });
+});
+
+app.delete('/api/uploads/:id', (req, res) => {
+  const upload_row = db.prepare('SELECT * FROM uploads WHERE id = ?').get(req.params.id);
+  if (!upload_row) return res.status(404).json({ error: 'Not found' });
+
+  const filePath = path.join(uploadsDir, String(upload_row.video_id), upload_row.filename);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  db.prepare('DELETE FROM uploads WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// --- Memory ---
+app.get('/api/memory/global', (req, res) => {
+  const memory = JSON.parse(fs.readFileSync(globalMemoryPath, 'utf-8'));
+  res.json(memory);
+});
+
+app.put('/api/memory/global', (req, res) => {
+  fs.writeFileSync(globalMemoryPath, JSON.stringify(req.body, null, 2));
+  res.json({ success: true });
+});
+
+// --- SPA fallback ---
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ============ HELPERS ============
+
+function buildSystemPrompt(video, memory, globalMemory) {
+  let prompt = `You are Kona 🌺 — Nora's creative partner for video production.
+
+About Nora:
+- Creates YouTube videos (currently working on Sapporo content)
+- Married to Damion, living in Japan
+- Interests: Japan, AI, developing, planning, video creation
+- Likes organized, well-structured approaches
+- Style preference: direct, warm, creative feedback — no fluff
+
+Your role:
+- Help brainstorm, write, and refine video scripts
+- Discuss structure, pacing, storytelling
+- Help with descriptions, voiceover text, and thumbnail concepts
+- Be genuinely creative and push ideas further
+- Reference specific parts of the script when discussing them (use section headers)
+
+You have the full script visible. When referencing a section, wrap it in [[section:Section Name]] tags so the frontend can highlight it.
+
+---
+
+CURRENT VIDEO: "${video.title}" (Status: ${video.status})
+
+SCRIPT CONTENT:
+${video.script_content || '(empty — no script yet)'}
+
+DESCRIPTION:
+${video.description || '(empty)'}
+
+VOICEOVER NOTES:
+${video.voiceover_notes || '(empty)'}
+
+THUMBNAIL IDEAS:
+${video.thumbnail_ideas || '(empty)'}`;
+
+  if (memory && memory.summary) {
+    prompt += `\n\n--- CONVERSATION SUMMARY (earlier messages) ---\n${memory.summary}`;
+  }
+
+  if (memory && memory.key_decisions !== '[]') {
+    try {
+      const decisions = JSON.parse(memory.key_decisions);
+      if (decisions.length > 0) {
+        prompt += `\n\nKEY DECISIONS:\n${decisions.map(d => `- ${d}`).join('\n')}`;
+      }
+    } catch(e) {}
+  }
+
+  if (globalMemory.preferences && globalMemory.preferences.length > 0) {
+    prompt += `\n\nNORA'S GLOBAL PREFERENCES:\n${globalMemory.preferences.map(p => `- ${p}`).join('\n')}`;
+  }
+
+  return prompt;
+}
+
+async function summarizeConversation(videoId, messages, memory) {
+  // Take the first 40 messages to summarize, keep last 10 as recent context
+  const toSummarize = messages.slice(0, messages.length - 10);
+  const conversationText = toSummarize.map(m => `${m.role}: ${m.content}`).join('\n\n');
+
+  const existingSummary = memory?.summary || '';
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-opus-4-0-20250514',
+      max_tokens: 1024,
+      system: 'Summarize this conversation between Nora (user) and Kona (assistant) about video production. Capture key decisions, creative direction, and important context. Be concise but thorough.',
+      messages: [{
+        role: 'user',
+        content: `${existingSummary ? `Previous summary:\n${existingSummary}\n\n` : ''}New conversation to summarize:\n${conversationText}`
+      }]
+    });
+
+    const summary = response.content[0].text;
+
+    // Update memory
+    db.prepare(`
+      UPDATE video_memory SET summary = ?, updated_at = CURRENT_TIMESTAMP WHERE video_id = ?
+    `).run(summary, videoId);
+
+    // Delete summarized messages (keep the recent ones)
+    const keepFrom = messages[messages.length - 10].id || 0;
+    db.prepare('DELETE FROM messages WHERE video_id = ? AND id < ?')
+      .run(videoId, toSummarize[toSummarize.length - 1].id || 0);
+
+    // Re-fetch message IDs properly
+    const allMsgs = db.prepare('SELECT id FROM messages WHERE video_id = ? ORDER BY created_at ASC').all(videoId);
+    if (allMsgs.length > 10) {
+      const cutoff = allMsgs[allMsgs.length - 10].id;
+      db.prepare('DELETE FROM messages WHERE video_id = ? AND id < ?').run(videoId, cutoff);
+    }
+
+    console.log(`Summarized conversation for video ${videoId}: ${toSummarize.length} messages compressed`);
+  } catch (err) {
+    console.error('Summarization error:', err);
+  }
+}
+
+// --- Start ---
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌺 Nora Writer running on http://0.0.0.0:${PORT}`);
+});
