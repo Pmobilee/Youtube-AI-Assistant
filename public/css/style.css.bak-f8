@@ -468,6 +468,72 @@ body {
   color: #f59e0b; 
 }
 
+/* === Chat Channel Tabs === */
+.chat-channel-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.chat-tab {
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all 0.2s;
+}
+.chat-tab:hover {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.chat-tab.active {
+  background: var(--accent);
+  color: white;
+}
+
+/* === Image Display === */
+.chat-image { 
+  max-width: 100%; 
+  max-height: 300px; 
+  border-radius: 8px; 
+  cursor: pointer; 
+  margin: 8px 0; 
+  transition: transform 0.2s; 
+}
+.chat-image:hover { 
+  transform: scale(1.02); 
+}
+.image-caption { 
+  font-size: 0.8em; 
+  opacity: 0.6; 
+  margin-top: 4px; 
+}
+.drag-over { 
+  border: 2px dashed var(--accent) !important; 
+  background: rgba(201, 123, 75, 0.05); 
+}
+[data-theme="dark"] .drag-over {
+  background: rgba(212, 145, 95, 0.08);
+}
+#image-preview-overlay { 
+  display: flex; 
+  align-items: center; 
+  justify-content: center; 
+  background: rgba(0,0,0,0.85); 
+  z-index: 1000; 
+  cursor: pointer;
+}
+#image-preview-overlay img { 
+  max-width: 90vw; 
+  max-height: 90vh; 
+  border-radius: 8px; 
+}
+
 /* === Responsive === */
 @media (max-width: 768px) {
   .workspace-container { flex-direction: column; }

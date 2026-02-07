@@ -3,6 +3,7 @@ let currentVideo = null;
 let autoSaveTimer = null;
 let isStreaming = false;
 let editors = {};
+let currentChatChannel = 'script';
 
 // === DOM refs ===
 const $ = (sel) => document.querySelector(sel);
@@ -160,7 +161,7 @@ async function openVideo(id) {
   if (editors['thumbnails-editor']) editors['thumbnails-editor'].setValue(currentVideo.thumbnail_ideas || '');
 
   // Load chat messages
-  await loadMessages(id);
+  await loadChannelMessages(id, currentChatChannel);
 
   // Load uploaded images
   loadUploads();
@@ -189,6 +190,44 @@ async function loadMessages(videoId) {
     return;
   }
 
+  container.innerHTML = messages.map(m => renderMessage(m.role, m.content)).join('');
+  scrollChat();
+}
+
+async function switchChatChannel(channel) {
+  currentChatChannel = channel;
+  // Update tab active states
+  document.querySelectorAll('.chat-tab').forEach(t => 
+    t.classList.toggle('active', t.dataset.channel === channel)
+  );
+  // Load messages for this channel
+  if (currentVideo) {
+    await loadChannelMessages(currentVideo.id, channel);
+  }
+}
+
+async function loadChannelMessages(videoId, channel) {
+  const res = await fetch(`/api/videos/${videoId}/channels/${channel}/messages`);
+  const messages = await res.json();
+  const container = $('#chat-messages');
+  
+  const channelNames = { script: 'script', description: 'description', thumbnail: 'thumbnails' };
+  
+  if (messages.length === 0) {
+    const welcomeText = channel === 'script' 
+      ? `Ready to work on "${escapeHtml(currentVideo.title)}"` 
+      : channel === 'description' 
+      ? 'Let\'s craft the perfect description' 
+      : 'Let\'s design some thumbnails';
+    
+    container.innerHTML = `
+      <div class="chat-welcome">
+        <p>🌺 <strong>Kona here!</strong> ${welcomeText}. What are you thinking?</p>
+      </div>
+    `;
+    return;
+  }
+  
   container.innerHTML = messages.map(m => renderMessage(m.role, m.content)).join('');
   scrollChat();
 }
@@ -225,6 +264,9 @@ function processMessageContent(content, isAssistant) {
   if (isAssistant) {
     html = html.replace(/\[\[section:(.+?)\]\]/g, '<span class="section-ref" onclick="scrollToSection(\'$1\')">📌 <u>$1</u></span>');
   }
+  // Image URLs (shared images)
+  html = html.replace(/\[Image shared: [^\]]+\]\s*(\S+\.(?:png|jpg|jpeg|gif|webp))/gi, 
+    '<img src="$1" class="chat-image" onclick="openImagePreview(\'$1\')" alt="Shared image">');
   // Paragraphs
   html = html.replace(/\n\n/g, '</p><p>');
   html = `<p>${html}</p>`;
@@ -315,6 +357,103 @@ function scrollChat() {
   container.scrollTop = container.scrollHeight;
 }
 
+// === Image Upload ===
+async function handleChatImage(file) {
+  if (!currentVideo) return;
+  
+  // Upload the image
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const uploadRes = await fetch(`/api/videos/${currentVideo.id}/upload`, {
+    method: 'POST',
+    body: formData
+  });
+  const uploadData = await uploadRes.json();
+  
+  // Show image in chat as user message
+  const imageUrl = uploadData.url;
+  const imageHtml = `
+    <div class="chat-message user">
+      <span class="sender">Nora</span>
+      <div class="bubble">
+        <img src="${imageUrl}" class="chat-image" alt="Uploaded image" onclick="openImagePreview('${imageUrl}')">
+        <p class="image-caption">Shared an image</p>
+      </div>
+    </div>
+  `;
+  
+  // Remove welcome message if present
+  const welcome = $('#chat-messages .chat-welcome');
+  if (welcome) welcome.remove();
+  
+  $('#chat-messages').insertAdjacentHTML('beforeend', imageHtml);
+  scrollChat();
+  
+  // Send a message referencing the image
+  // Add streaming placeholder
+  const streamId = `stream-${Date.now()}`;
+  $('#chat-messages').insertAdjacentHTML('beforeend', `
+    <div class="chat-message assistant" id="${streamId}">
+      <span class="sender">Kona 🌺</span>
+      <div class="bubble"><span class="streaming-indicator"></span></div>
+    </div>
+  `);
+  scrollChat();
+  
+  isStreaming = true;
+  try {
+    const res = await fetch(`/api/videos/${currentVideo.id}/channels/${currentChatChannel}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        message: `I'm sharing this image with you: ${imageUrl}\nPlease look at it and give me your thoughts.`, 
+        imageUrl 
+      })
+    });
+    
+    // Standard SSE streaming reader (same as sendMessage)
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let buffer = '';
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === 'text') {
+            fullText += data.content;
+            const el = document.getElementById(streamId);
+            if (el) el.querySelector('.bubble').innerHTML = processMessageContent(fullText, true);
+            scrollChat();
+          }
+        } catch(e) {}
+      }
+    }
+  } catch(err) {
+    const el = document.getElementById(streamId);
+    if (el) el.querySelector('.bubble').innerHTML = '<p style="color:var(--danger)">Error processing image</p>';
+  }
+  isStreaming = false;
+  updateTokenBar();
+}
+
+function openImagePreview(url) {
+  $('#image-preview-img').src = url;
+  $('#image-preview-overlay').classList.remove('hidden');
+}
+
+function closeImagePreview() {
+  $('#image-preview-overlay').classList.add('hidden');
+}
+
 // === Chat ===
 async function sendMessage() {
   const input = $('#chat-input');
@@ -344,7 +483,7 @@ async function sendMessage() {
   scrollChat();
 
   try {
-    const res = await fetch(`/api/videos/${currentVideo.id}/chat`, {
+    const res = await fetch(`/api/videos/${currentVideo.id}/channels/${currentChatChannel}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message })
@@ -669,6 +808,37 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
+    }
+  });
+
+  // Image paste handler on chat input
+  $('#chat-input').addEventListener('paste', async (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) await handleChatImage(file);
+        return;
+      }
+    }
+  });
+
+  // Drag-drop handler on chat messages area
+  const chatArea = $('#chat-messages');
+  chatArea.addEventListener('dragover', (e) => { 
+    e.preventDefault(); 
+    chatArea.classList.add('drag-over'); 
+  });
+  chatArea.addEventListener('dragleave', () => chatArea.classList.remove('drag-over'));
+  chatArea.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    chatArea.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      await handleChatImage(file);
     }
   });
 

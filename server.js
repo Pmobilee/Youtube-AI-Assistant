@@ -456,7 +456,7 @@ app.get('/api/videos/:videoId/channels/:channelType/messages', (req, res) => {
 
 app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => {
   const { videoId, channelType } = req.params;
-  const { message } = req.body;
+  const { message, imageUrl } = req.body;
   const validChannels = ['script', 'description', 'thumbnail'];
   
   if (!validChannels.includes(channelType)) {
@@ -466,13 +466,13 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   
-  // Save user message to channel
-  db.prepare('INSERT INTO channel_messages (video_id, channel_type, role, content) VALUES (?, ?, ?, ?)')
-    .run(videoId, channelType, 'user', message);
+  // Save user message to channel (with imageUrl if present)
+  db.prepare('INSERT INTO channel_messages (video_id, channel_type, role, content, image_url) VALUES (?, ?, ?, ?, ?)')
+    .run(videoId, channelType, 'user', message, imageUrl || null);
   
   // Get THIS channel's messages
   let channelMessages = db.prepare(
-    'SELECT role, content FROM channel_messages WHERE video_id = ? AND channel_type = ? ORDER BY created_at ASC'
+    'SELECT role, content, image_url FROM channel_messages WHERE video_id = ? AND channel_type = ? ORDER BY created_at ASC'
   ).all(videoId, channelType);
   
   // Get SHARED memory (all channels contribute to this)
@@ -482,13 +482,29 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
   // Build system prompt with channel context
   const systemPrompt = buildChannelSystemPrompt(video, memory, globalMemory, channelType);
   
-  // Format messages for Anthropic (filter empty content)
+  // Format messages for Anthropic (filter empty content, support images)
   const apiMessages = channelMessages
     .filter(m => m.content && m.content.trim().length > 0)
-    .map(m => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content
-    }));
+    .map(m => {
+      const msg = {
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content
+      };
+      
+      // If there's an image URL, format as vision API message
+      if (m.image_url && m.role === 'user') {
+        // Extract the actual image URL (remove the message text)
+        const imageUrlMatch = m.image_url;
+        if (imageUrlMatch) {
+          msg.content = [
+            { type: 'text', text: m.content },
+            { type: 'image', source: { type: 'url', url: `http://localhost:3000${imageUrlMatch}` } }
+          ];
+        }
+      }
+      
+      return msg;
+    });
   
   try {
     // Stream response via SSE
@@ -578,6 +594,60 @@ app.delete('/api/uploads/:id', (req, res) => {
   const filePath = path.join(uploadsDir, String(upload_row.video_id), upload_row.filename);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   db.prepare('DELETE FROM uploads WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// --- Thumbnail Versions ---
+// Get all thumbnail versions for a video
+app.get('/api/videos/:videoId/thumbnails', (req, res) => {
+  const versions = db.prepare(
+    'SELECT * FROM thumbnail_versions WHERE video_id = ? ORDER BY version_number DESC'
+  ).all(req.params.videoId);
+  res.json(versions);
+});
+
+// Upload a new thumbnail version
+app.post('/api/videos/:videoId/thumbnails', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  
+  const videoId = req.params.videoId;
+  const notes = req.body.notes || '';
+  
+  // Get next version number
+  const latest = db.prepare(
+    'SELECT MAX(version_number) as max_v FROM thumbnail_versions WHERE video_id = ?'
+  ).get(videoId);
+  const versionNumber = (latest?.max_v || 0) + 1;
+  
+  db.prepare(
+    'INSERT INTO thumbnail_versions (video_id, filename, original_name, notes, version_number) VALUES (?, ?, ?, ?, ?)'
+  ).run(videoId, req.file.filename, req.file.originalname, notes, versionNumber);
+  
+  // Also update the video's thumbnail field to the latest
+  db.prepare('UPDATE videos SET thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    .run(`/uploads/${videoId}/${req.file.filename}`, videoId);
+  
+  // Log activity
+  try {
+    db.prepare('INSERT INTO activity_log (video_id, actor, action_type, details) VALUES (?, ?, ?, ?)')
+      .run(videoId, 'Nora', 'thumbnail_upload', `Version ${versionNumber}: ${req.file.originalname}`);
+  } catch(e) {
+    // activity_log table may not exist yet, ignore
+  }
+  
+  const version = db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? AND version_number = ?')
+    .get(videoId, versionNumber);
+  res.json(version);
+});
+
+// Delete a thumbnail version
+app.delete('/api/videos/:videoId/thumbnails/:versionId', (req, res) => {
+  const version = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ?').get(req.params.versionId);
+  if (!version) return res.status(404).json({ error: 'Not found' });
+  
+  const filePath = path.join(uploadsDir, String(req.params.videoId), version.filename);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  db.prepare('DELETE FROM thumbnail_versions WHERE id = ?').run(req.params.versionId);
   res.json({ success: true });
 });
 

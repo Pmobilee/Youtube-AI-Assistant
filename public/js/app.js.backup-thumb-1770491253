@@ -33,7 +33,7 @@ function updateThemeButtons() {
 }
 
 function initEditors() {
-  const editorIds = ['script-editor', 'description-editor', 'voiceover-editor'];
+  const editorIds = ['script-editor', 'description-editor', 'voiceover-editor', 'thumbnails-editor'];
   const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dracula' : 'default';
   
   editorIds.forEach(id => {
@@ -158,15 +158,13 @@ async function openVideo(id) {
   if (editors['script-editor']) editors['script-editor'].setValue(currentVideo.script_content || '');
   if (editors['description-editor']) editors['description-editor'].setValue(currentVideo.description || '');
   if (editors['voiceover-editor']) editors['voiceover-editor'].setValue(currentVideo.voiceover_notes || '');
+  if (editors['thumbnails-editor']) editors['thumbnails-editor'].setValue(currentVideo.thumbnail_ideas || '');
 
   // Load chat messages
   await loadChannelMessages(id, currentChatChannel);
 
   // Load uploaded images
   loadUploads();
-  
-  // Load thumbnails
-  loadThumbnails();
 
   // Switch view
   showView('workspace');
@@ -789,77 +787,6 @@ function debounce(fn, delay) {
   };
 }
 
-// === Thumbnails ===
-async function loadThumbnails() {
-  if (!currentVideo) return;
-  const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails`);
-  const versions = await res.json();
-  
-  const current = $('#thumb-current');
-  const timeline = $('#thumb-timeline');
-  
-  if (versions.length === 0) {
-    current.innerHTML = '<p class="thumb-empty">No thumbnails yet. Upload one above!</p>';
-    timeline.innerHTML = '';
-    return;
-  }
-  
-  // Show latest version large
-  const latest = versions[0];
-  current.innerHTML = `
-    <img src="/uploads/${currentVideo.id}/${latest.filename}" alt="Current thumbnail" class="thumb-preview-large" onclick="openImagePreview('/uploads/${currentVideo.id}/${latest.filename}')">
-    <div class="thumb-version-label">v${latest.version_number} — ${latest.notes || 'No notes'}</div>
-  `;
-  
-  // Show timeline of all versions
-  timeline.innerHTML = versions.map(v => `
-    <div class="thumb-version-card ${v.id === latest.id ? 'active' : ''}" onclick="selectThumbnailVersion(${v.id}, '${v.filename}')">
-      <img src="/uploads/${currentVideo.id}/${v.filename}" alt="v${v.version_number}">
-      <div class="thumb-version-info">
-        <span class="thumb-v-number">v${v.version_number}</span>
-        <span class="thumb-v-date">${new Date(v.created_at).toLocaleDateString()}</span>
-        ${v.notes ? `<span class="thumb-v-notes">${escapeHtml(v.notes)}</span>` : ''}
-      </div>
-      <button class="thumb-delete" onclick="event.stopPropagation(); deleteThumbnailVersion(${currentVideo.id}, ${v.id})">✕</button>
-    </div>
-  `).join('');
-}
-
-async function uploadThumbnail(file) {
-  const notes = $('#thumb-notes')?.value || '';
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('notes', notes);
-  
-  await fetch(`/api/videos/${currentVideo.id}/thumbnails`, { method: 'POST', body: formData });
-  $('#thumb-notes').value = '';
-  await loadThumbnails();
-}
-
-async function deleteThumbnailVersion(videoId, versionId) {
-  if (!confirm('Delete this thumbnail version?')) return;
-  await fetch(`/api/videos/${videoId}/thumbnails/${versionId}`, { method: 'DELETE' });
-  await loadThumbnails();
-}
-
-function selectThumbnailVersion(versionId, filename) {
-  // Could show this version large in the current section
-  // For now, just update the active state
-  document.querySelectorAll('.thumb-version-card').forEach(card => card.classList.remove('active'));
-  event.currentTarget.classList.add('active');
-}
-
-function openImagePreview(src) {
-  const overlay = $('#image-preview-overlay');
-  const img = $('#image-preview-img');
-  img.src = src;
-  overlay.classList.remove('hidden');
-}
-
-function closeImagePreview() {
-  $('#image-preview-overlay').classList.add('hidden');
-}
-
 // === Init ===
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
@@ -956,23 +883,4 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#delete-overlay').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeDeleteModal();
   });
-  
-  // Thumbnail drop zone
-  const thumbDrop = document.getElementById('thumb-drop-zone');
-  if (thumbDrop) {
-    thumbDrop.addEventListener('click', () => document.getElementById('thumb-file-input').click());
-    thumbDrop.addEventListener('dragover', e => { e.preventDefault(); thumbDrop.classList.add('drag-over'); });
-    thumbDrop.addEventListener('dragleave', () => thumbDrop.classList.remove('drag-over'));
-    thumbDrop.addEventListener('drop', async e => { 
-      e.preventDefault(); 
-      thumbDrop.classList.remove('drag-over'); 
-      if (e.dataTransfer.files[0]) await uploadThumbnail(e.dataTransfer.files[0]); 
-    });
-    document.getElementById('thumb-file-input').addEventListener('change', async e => { 
-      if (e.target.files[0]) { 
-        await uploadThumbnail(e.target.files[0]); 
-        e.target.value = ''; 
-      } 
-    });
-  }
 });

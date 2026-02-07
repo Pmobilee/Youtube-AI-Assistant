@@ -456,7 +456,7 @@ app.get('/api/videos/:videoId/channels/:channelType/messages', (req, res) => {
 
 app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => {
   const { videoId, channelType } = req.params;
-  const { message } = req.body;
+  const { message, imageUrl } = req.body;
   const validChannels = ['script', 'description', 'thumbnail'];
   
   if (!validChannels.includes(channelType)) {
@@ -466,13 +466,13 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   
-  // Save user message to channel
-  db.prepare('INSERT INTO channel_messages (video_id, channel_type, role, content) VALUES (?, ?, ?, ?)')
-    .run(videoId, channelType, 'user', message);
+  // Save user message to channel (with imageUrl if present)
+  db.prepare('INSERT INTO channel_messages (video_id, channel_type, role, content, image_url) VALUES (?, ?, ?, ?, ?)')
+    .run(videoId, channelType, 'user', message, imageUrl || null);
   
   // Get THIS channel's messages
   let channelMessages = db.prepare(
-    'SELECT role, content FROM channel_messages WHERE video_id = ? AND channel_type = ? ORDER BY created_at ASC'
+    'SELECT role, content, image_url FROM channel_messages WHERE video_id = ? AND channel_type = ? ORDER BY created_at ASC'
   ).all(videoId, channelType);
   
   // Get SHARED memory (all channels contribute to this)
@@ -482,13 +482,29 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
   // Build system prompt with channel context
   const systemPrompt = buildChannelSystemPrompt(video, memory, globalMemory, channelType);
   
-  // Format messages for Anthropic (filter empty content)
+  // Format messages for Anthropic (filter empty content, support images)
   const apiMessages = channelMessages
     .filter(m => m.content && m.content.trim().length > 0)
-    .map(m => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content
-    }));
+    .map(m => {
+      const msg = {
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content
+      };
+      
+      // If there's an image URL, format as vision API message
+      if (m.image_url && m.role === 'user') {
+        // Extract the actual image URL (remove the message text)
+        const imageUrlMatch = m.image_url;
+        if (imageUrlMatch) {
+          msg.content = [
+            { type: 'text', text: m.content },
+            { type: 'image', source: { type: 'url', url: `http://localhost:3000${imageUrlMatch}` } }
+          ];
+        }
+      }
+      
+      return msg;
+    });
   
   try {
     // Stream response via SSE
