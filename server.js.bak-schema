@@ -206,33 +206,6 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
-// ============ TOKEN MANAGEMENT ============
-
-function estimateTokens(text) {
-  if (!text) return 0;
-  // ~3.5 chars per token for English
-  return Math.ceil(text.length / 3.5);
-}
-
-function getVideoTokenCount(videoId) {
-  const messages = db.prepare('SELECT content FROM messages WHERE video_id = ?').all(videoId);
-  const channelMsgs = db.prepare('SELECT content FROM channel_messages WHERE video_id = ?').all(videoId);
-  const video = db.prepare('SELECT script_content, description, voiceover_notes, thumbnail_ideas FROM videos WHERE id = ?').get(videoId);
-  const memory = db.prepare('SELECT summary FROM video_memory WHERE video_id = ?').get(videoId);
-  
-  let total = 0;
-  messages.forEach(m => total += estimateTokens(m.content));
-  channelMsgs.forEach(m => total += estimateTokens(m.content));
-  if (video) {
-    total += estimateTokens(video.script_content);
-    total += estimateTokens(video.description);
-    total += estimateTokens(video.voiceover_notes);
-    total += estimateTokens(video.thumbnail_ideas);
-  }
-  if (memory) total += estimateTokens(memory.summary);
-  return total;
-}
-
 // ============ API ROUTES ============
 
 // --- Videos ---
@@ -291,18 +264,6 @@ app.delete('/api/videos/:id', (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/videos/:videoId/tokens', (req, res) => {
-  const count = getVideoTokenCount(req.params.videoId);
-  const max = 300000;
-  res.json({ 
-    tokens: count, 
-    max, 
-    percentage: Math.round((count / max) * 100), 
-    warning: count > 250000, 
-    critical: count > 280000 
-  });
-});
-
 // --- Messages / Chat ---
 app.get('/api/videos/:videoId/messages', (req, res) => {
   const messages = db.prepare('SELECT * FROM messages WHERE video_id = ? ORDER BY created_at ASC')
@@ -329,14 +290,8 @@ app.post('/api/videos/:videoId/chat', async (req, res) => {
   const memory = db.prepare('SELECT * FROM video_memory WHERE video_id = ?').get(videoId);
   const globalMemory = JSON.parse(fs.readFileSync(globalMemoryPath, 'utf-8'));
 
-  // Check token count
-  const tokenCount = getVideoTokenCount(videoId);
-  const shouldSummarize = messages.length > 50 || tokenCount > 250000;
-  const tokenWarning = tokenCount > 250000;
-  const tokenCritical = tokenCount > 280000;
-
-  // Auto-summarize if needed
-  if (shouldSummarize) {
+  // Auto-summarize if >50 messages
+  if (messages.length > 50) {
     await summarizeConversation(videoId, messages, memory);
     messages = db.prepare('SELECT role, content FROM messages WHERE video_id = ? ORDER BY created_at ASC')
       .all(videoId);
@@ -400,11 +355,8 @@ app.post('/api/videos/:videoId/chat', async (req, res) => {
     db.prepare('INSERT INTO messages (video_id, role, content) VALUES (?, ?, ?)')
       .run(videoId, 'assistant', fullResponse);
 
-    // Update video timestamp and token count in memory
+    // Update video timestamp
     db.prepare('UPDATE videos SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(videoId);
-    const newTokenCount = getVideoTokenCount(videoId);
-    db.prepare('UPDATE video_memory SET token_count = ?, updated_at = CURRENT_TIMESTAMP WHERE video_id = ?')
-      .run(newTokenCount, videoId);
 
     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
     res.end();
@@ -489,18 +441,6 @@ You're Nora's creative partner for video production. This is YOUR workspace with
 
 ## Communication Style
 Same as always — direct, warm, a little sarcastic, never fake. You know Nora. You care about making her videos great. Skip the pleasantries and dig into the work.
-
-## Suggesting Text Changes
-When suggesting specific text changes to the script, use this format:
-<<<SUGGEST tab="script" section="Section Name">>>
----OLD---
-exact text to replace
----NEW---
-replacement text
-<<<END_SUGGEST>>>
-
-You can include multiple SUGGEST blocks in one message. The tab can be: script, description, voiceover, thumbnails.
-The section parameter is optional but helps Nora understand context.
 
 ---
 
