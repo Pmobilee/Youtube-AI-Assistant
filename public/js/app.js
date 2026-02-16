@@ -4,6 +4,8 @@ let autoSaveTimer = null;
 let isStreaming = false;
 let editors = {};
 let currentChatChannel = 'script';
+let pendingSuggestions = [];
+let activeSuggestionIdx = null;
 
 // === DOM refs ===
 const $ = (sel) => document.querySelector(sel);
@@ -38,7 +40,7 @@ function initEditors() {
   
   editorIds.forEach(id => {
     const el = document.getElementById(id);
-    if (!el || editors[id]) return;
+    if (!el || editors[id]) return; // Skip if element doesn't exist or already initialized
     
     editors[id] = CodeMirror(el, {
       mode: 'markdown',
@@ -51,6 +53,12 @@ function initEditors() {
     // Auto-save on change
     editors[id].on('change', debounce(saveVideo, 1000));
   });
+  
+  // Add timing widget listener to script editor
+  if (editors['script-editor']) {
+    editors['script-editor'].on('change', debounce(updateTimingWidget, 300));
+    editors['script-editor'].on('change', debounce(updateOutline, 500));
+  }
 }
 
 function updateEditorThemes() {
@@ -58,6 +66,167 @@ function updateEditorThemes() {
   Object.values(editors).forEach(ed => {
     if (ed && ed.setOption) ed.setOption('theme', theme);
   });
+}
+
+// === Timing Widget ===
+let targetWPM = 150;
+
+function updateTimingWidget() {
+  const editor = editors['script-editor'];
+  if (!editor) return;
+  
+  const text = editor.getValue();
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const chars = text.length;
+  const minutes = words / targetWPM;
+  const mins = Math.floor(minutes);
+  const secs = Math.round((minutes - mins) * 60);
+  
+  const wordEl = document.getElementById('word-count');
+  const charEl = document.getElementById('char-count');
+  const durEl = document.getElementById('duration-estimate');
+  
+  if (wordEl) wordEl.textContent = `${words.toLocaleString()} words`;
+  if (charEl) charEl.textContent = `${chars.toLocaleString()} chars`;
+  if (durEl) durEl.textContent = `~${mins}:${secs.toString().padStart(2, '0')}`;
+  
+  // Color code duration
+  if (durEl) {
+    durEl.style.color = minutes > 20 ? '#ef4444' : minutes > 15 ? '#f59e0b' : minutes > 10 ? '#22c55e' : 'var(--text-secondary)';
+  }
+  
+  // Update section timing
+  updateSectionTiming();
+}
+
+function updateSectionTiming() {
+  const editor = editors['script-editor'];
+  if (!editor) return;
+  
+  const text = editor.getValue();
+  const sections = text.split(/^(?=#{1,3}\s)/m);
+  const container = document.getElementById('section-timing');
+  
+  if (!container || sections.length <= 1) {
+    if (container) container.innerHTML = '';
+    return;
+  }
+  
+  container.innerHTML = sections.filter(s => s.trim()).map(section => {
+    const firstLine = section.split('\n')[0].replace(/^#+\s*/, '').trim();
+    const words = section.trim().split(/\s+/).length;
+    const mins = words / targetWPM;
+    const m = Math.floor(mins);
+    const s = Math.round((mins - m) * 60);
+    return `<div class="section-time-item"><span class="section-time-name">${escapeHtml(firstLine || 'Untitled')}</span><span class="section-time-dur">${m}:${s.toString().padStart(2, '0')}</span></div>`;
+  }).join('');
+}
+
+// === Section Outline ===
+let draggedSectionIndex = null;
+
+function updateOutline() {
+  const editor = editors['script-editor'];
+  if (!editor) return;
+  
+  const text = editor.getValue();
+  const lines = text.split('\n');
+  const sections = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^(#{1,3})\s+(.+)/);
+    if (match) {
+      if (sections.length > 0) sections[sections.length - 1].endLine = i - 1;
+      sections.push({ 
+        level: match[1].length, 
+        title: match[2], 
+        startLine: i, 
+        endLine: lines.length - 1 
+      });
+    }
+  }
+  
+  const list = document.getElementById('outline-list');
+  if (!list) return;
+  
+  if (sections.length === 0) {
+    list.innerHTML = '<p class="no-sections">No sections found. Use # headers.</p>';
+    return;
+  }
+  
+  list.innerHTML = sections.map((s, idx) => `
+    <div class="outline-item" draggable="true" data-index="${idx}" data-start="${s.startLine}" data-end="${s.endLine}"
+      ondragstart="dragSection(event, ${idx})"
+      ondragover="event.preventDefault(); this.classList.add('drag-target')"
+      ondragleave="this.classList.remove('drag-target')"
+      ondrop="dropSection(event, ${idx}); this.classList.remove('drag-target')"
+      onclick="scrollToLine(${s.startLine})">
+      <span class="outline-drag">☰</span>
+      <span class="outline-title" style="padding-left: ${(s.level - 1) * 12}px">${escapeHtml(s.title)}</span>
+    </div>
+  `).join('');
+}
+
+function dragSection(e, index) {
+  draggedSectionIndex = index;
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function dropSection(e, targetIndex) {
+  e.preventDefault();
+  if (draggedSectionIndex === null || draggedSectionIndex === targetIndex) return;
+  
+  const editor = editors['script-editor'];
+  if (!editor) return;
+  
+  const text = editor.getValue();
+  const origLines = text.split('\n');
+  
+  // Parse sections
+  const origSections = [];
+  let preamble = [];
+  let currentSec = null;
+  
+  for (let i = 0; i < origLines.length; i++) {
+    if (origLines[i].match(/^#{1,3}\s/)) {
+      if (currentSec) origSections.push(currentSec);
+      currentSec = { lines: [origLines[i]] };
+    } else if (currentSec) {
+      currentSec.lines.push(origLines[i]);
+    } else {
+      preamble.push(origLines[i]);
+    }
+  }
+  if (currentSec) origSections.push(currentSec);
+  
+  if (origSections.length === 0) return;
+  
+  // Reorder
+  const moved = origSections.splice(draggedSectionIndex, 1)[0];
+  const adjustedTarget = targetIndex > draggedSectionIndex ? targetIndex - 1 : targetIndex;
+  origSections.splice(adjustedTarget, 0, moved);
+  
+  // Rebuild
+  const newText = preamble.join('\n') + (preamble.length ? '\n' : '') + origSections.map(s => s.lines.join('\n')).join('\n');
+  editor.setValue(newText);
+  saveVideo();
+  updateOutline();
+  updateTimingWidget();
+  
+  draggedSectionIndex = null;
+}
+
+function scrollToLine(lineNum) {
+  const editor = editors['script-editor'];
+  if (!editor) return;
+  editor.scrollIntoView({ line: lineNum, ch: 0 }, 100);
+  editor.setCursor({ line: lineNum, ch: 0 });
+  editor.focus();
+}
+
+function toggleOutline() {
+  const outline = document.getElementById('section-outline');
+  if (outline) outline.classList.toggle('collapsed');
 }
 
 // === Navigation ===
@@ -102,6 +271,9 @@ async function loadVideos() {
       </div>
     `;
   }).join('');
+  
+  // Load templates alongside videos
+  await loadTemplates();
 }
 
 // === Video CRUD ===
@@ -118,14 +290,73 @@ function closeModal() {
 
 async function confirmNewVideo() {
   const title = $('#new-video-title').value.trim() || 'Untitled Video';
+  const templateId = document.getElementById('template-picker')?.value;
   closeModal();
-  const res = await fetch('/api/videos', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title })
+  
+  if (templateId) {
+    const res = await fetch(`/api/templates/${templateId}/use`, { 
+      method: 'POST', 
+      headers: {'Content-Type':'application/json'}, 
+      body: JSON.stringify({ title }) 
+    });
+    const video = await res.json();
+    openVideo(video.id);
+  } else {
+    const res = await fetch('/api/videos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title })
+    });
+    const video = await res.json();
+    openVideo(video.id);
+  }
+}
+
+// === Templates ===
+async function loadTemplates() {
+  const res = await fetch('/api/templates');
+  const templates = await res.json();
+  
+  // Template chips in library
+  const chips = document.getElementById('template-chips');
+  if (chips) {
+    chips.innerHTML = templates.map(t => `
+      <button class="template-chip" onclick="useTemplate(${t.id}, '${escapeHtml(t.name)}')">
+        📋 ${escapeHtml(t.name)}
+      </button>
+    `).join('') || '<span class="no-templates">No templates yet</span>';
+  }
+  
+  // Template picker in new video modal
+  const picker = document.getElementById('template-picker');
+  if (picker) {
+    picker.innerHTML = '<option value="">Blank</option>' + templates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
+  }
+}
+
+async function useTemplate(templateId, name) {
+  const title = prompt(`New video title:`, `New ${name} Video`) || 'Untitled';
+  const res = await fetch(`/api/templates/${templateId}/use`, { 
+    method: 'POST', 
+    headers: {'Content-Type':'application/json'}, 
+    body: JSON.stringify({ title }) 
   });
   const video = await res.json();
   openVideo(video.id);
+}
+
+async function saveAsTemplate() {
+  if (!currentVideo) return;
+  const name = prompt('Template name:', currentVideo.title + ' Template');
+  if (!name) return;
+  const desc = prompt('Brief description (optional):') || '';
+  await fetch('/api/templates', { 
+    method: 'POST', 
+    headers: {'Content-Type':'application/json'}, 
+    body: JSON.stringify({ name, description: desc, videoId: currentVideo.id }) 
+  });
+  showToast('Template saved!');
+  await loadTemplates();
 }
 
 let deleteTargetId = null;
@@ -150,6 +381,12 @@ async function openVideo(id) {
   const res = await fetch(`/api/videos/${id}`);
   currentVideo = await res.json();
 
+  // Switch view first so editors exist in DOM
+  showView('workspace');
+  
+  // NOW initialize editors (they exist now)
+  initEditors();
+
   // Populate fields
   $('#video-title').value = currentVideo.title;
   $('#video-status').value = currentVideo.status;
@@ -168,14 +405,19 @@ async function openVideo(id) {
   // Load thumbnails
   loadThumbnails();
 
-  // Switch view
-  showView('workspace');
-
+  // View already switched (done earlier to init editors)
+  
   // Set up auto-save
   setupAutoSave();
   
   // Update token bar
   updateTokenBar();
+  
+  // Update timing widget
+  updateTimingWidget();
+  
+  // Update section outline
+  updateOutline();
 }
 
 async function loadMessages(videoId) {
@@ -253,6 +495,18 @@ function renderMessage(role, content, imageUrl = null) {
 }
 
 function processMessageContent(content, isAssistant) {
+  // Extract suggestion blocks FIRST — show as clickable one-liners in chat
+  if (isAssistant) {
+    const suggestionRegex = /<<<SUGGEST\s+tab="(\w+)"(?:\s+section="(.*?)")?\s*>>>\n---OLD---\n([\s\S]*?)\n---NEW---\n([\s\S]*?)\n<<<END_SUGGEST>>>/g;
+    
+    content = content.replace(suggestionRegex, (match, tab, section, oldText, newText) => {
+      const idx = pendingSuggestions.length;
+      const label = section || tab;
+      pendingSuggestions.push({ tab, section, oldText: oldText.trim(), newText: newText.trim() });
+      return `[SUGGESTION_CHIP:${idx}:${label}]`;
+    });
+  }
+
   // Parse markdown-ish content
   let html = escapeHtml(content);
 
@@ -285,7 +539,12 @@ function processMessageContent(content, isAssistant) {
   html = html.replace(/<p>(<ul>)/g, '$1');
   html = html.replace(/(<\/ul>)<\/p>/g, '$1');
 
-  // Process suggestions (if assistant message)
+  // Render suggestion chips as clickable one-liners
+  html = html.replace(/\[SUGGESTION_CHIP:(\d+):(.*?)\]/g, (match, idx, label) => {
+    return `<span class="suggestion-chip" onclick="showSuggestion(${idx})" id="suggestion-chip-${idx}">💡 <u>Suggestion: ${escapeHtml(label)}</u></span>`;
+  });
+
+  // Process suggestions into inline diffs (Feature 5)
   if (isAssistant) {
     html = processSuggestions(html);
   }
@@ -293,31 +552,34 @@ function processMessageContent(content, isAssistant) {
   return html;
 }
 
+// === Feature 5: Inline Git-Diff Style Suggestions ===
+
 function processSuggestions(html) {
-  const suggestionRegex = /&lt;&lt;&lt;SUGGEST\s+tab=&quot;(\w+)&quot;\s*(?:section=&quot;([^&quot;]*)&quot;)?\s*&gt;&gt;&gt;\n---OLD---\n([\s\S]*?)\n---NEW---\n([\s\S]*?)\n&lt;&lt;&lt;END_SUGGEST&gt;&gt;&gt;/g;
+  const suggestionRegex = /&lt;&lt;&lt;SUGGEST\s+tab=&quot;(\w+)&quot;(?:\s+section=&quot;([^&]*)&quot;)?\s*&gt;&gt;&gt;\n---OLD---\n([\s\S]*?)\n---NEW---\n([\s\S]*?)\n&lt;&lt;&lt;END_SUGGEST&gt;&gt;&gt;/g;
   
   let idx = 0;
   return html.replace(suggestionRegex, (match, tab, section, oldText, newText) => {
     const id = `suggest-${Date.now()}-${idx++}`;
-    const sectionLabel = section ? ` › ${section}` : '';
+    // Unescape HTML entities in oldText and newText for proper display
+    const oldTextUnescaped = unescapeHtml(oldText);
+    const newTextUnescaped = unescapeHtml(newText);
     
-    // JSON stringify and escape for onclick attributes
-    const oldEscaped = JSON.stringify(oldText).replace(/'/g, "\\'");
-    const newEscaped = JSON.stringify(newText).replace(/'/g, "\\'");
-    const tabEscaped = tab.replace(/'/g, "\\'");
+    // Escape for JSON embedding
+    const oldTextJson = JSON.stringify(oldTextUnescaped).replace(/'/g, "\\'");
+    const newTextJson = JSON.stringify(newTextUnescaped).replace(/'/g, "\\'");
     
     return `
       <div class="suggestion-diff" id="${id}">
         <div class="diff-header">
-          <span class="diff-tab">📝 ${tab}${sectionLabel}</span>
+          <span class="diff-tab">📝 ${escapeHtml(tab)}${section ? ` › ${escapeHtml(section)}` : ''}</span>
           <div class="diff-actions">
-            <button class="diff-accept" onclick="acceptSuggestion('${id}', '${tabEscaped}', ${oldEscaped}, ${newEscaped})">✓ Accept</button>
+            <button class="diff-accept" onclick="acceptSuggestion('${id}', '${escapeHtml(tab)}', ${oldTextJson}, ${newTextJson})">✓ Accept</button>
             <button class="diff-reject" onclick="rejectSuggestion('${id}')">✕ Reject</button>
           </div>
         </div>
         <div class="diff-body">
-          <div class="diff-old"><span class="diff-label">- Remove</span><pre>${oldText}</pre></div>
-          <div class="diff-new"><span class="diff-label">+ Add</span><pre>${newText}</pre></div>
+          <div class="diff-old"><span class="diff-label">- Remove</span><pre>${oldTextUnescaped}</pre></div>
+          <div class="diff-new"><span class="diff-label">+ Add</span><pre>${newTextUnescaped}</pre></div>
         </div>
       </div>
     `;
@@ -359,6 +621,135 @@ function rejectSuggestion(id) {
     el.classList.add('suggestion-rejected');
     el.querySelector('.diff-actions').innerHTML = '<span class="diff-status rejected">✗ Dismissed</span>';
   }
+}
+
+function showSuggestion(idx) {
+  const s = pendingSuggestions[idx];
+  if (!s) return;
+  activeSuggestionIdx = idx;
+  
+  const overlay = $('#suggestion-overlay');
+  $('#suggestion-section').textContent = s.section ? `› ${s.section}` : `› ${s.tab}`;
+  
+  // Get context from the editor
+  const editorId = s.tab === 'thumbnails' ? 'thumbnails-editor' : `${s.tab}-editor`;
+  const editor = editors[editorId];
+  const fullText = editor ? editor.getValue() : '';
+  
+  // Find the old text in the script and extract 10 lines of context
+  const matchIdx = fullText.indexOf(s.oldText);
+  let contextBefore = '', contextAfter = '';
+  const CONTEXT_LINES = 10;
+  
+  if (matchIdx >= 0) {
+    // Get 10 lines before
+    const textBefore = fullText.slice(0, matchIdx);
+    const linesBefore = textBefore.split('\n');
+    const slicedBefore = linesBefore.slice(-CONTEXT_LINES);
+    contextBefore = (linesBefore.length > CONTEXT_LINES ? '…\n' : '') + slicedBefore.join('\n');
+    
+    // Get 10 lines after
+    const textAfter = fullText.slice(matchIdx + s.oldText.length);
+    const linesAfter = textAfter.split('\n');
+    const slicedAfter = linesAfter.slice(0, CONTEXT_LINES);
+    contextAfter = slicedAfter.join('\n') + (linesAfter.length > CONTEXT_LINES ? '\n…' : '');
+  }
+  
+  // Render context as formatted markdown
+  const renderMd = (text) => processMessageContent(text, false);
+  
+  // Build the contextual diff view
+  const diffView = $('.suggestion-diff-view');
+  diffView.innerHTML = `
+    ${contextBefore ? `<div class="diff-context">${renderMd(contextBefore)}</div>` : ''}
+    <div class="diff-side diff-remove">
+      <div class="diff-side-label">— Current</div>
+      <div class="diff-content">${renderMd(s.oldText)}</div>
+    </div>
+    <div class="diff-side diff-add">
+      <div class="diff-side-label">+ Suggested</div>
+      <div class="diff-content">${renderMd(s.newText)}</div>
+    </div>
+    ${contextAfter ? `<div class="diff-context">${renderMd(contextAfter)}</div>` : ''}
+  `;
+  
+  overlay.classList.remove('hidden');
+  
+  // Show correct buttons based on state
+  const acceptBtn = $('#suggestion-accept-btn');
+  const rejectBtn = $('#suggestion-reject-btn');
+  
+  if (s.applied) {
+    acceptBtn.textContent = '↩ Undo Change';
+    acceptBtn.className = 'btn btn-ghost';
+    acceptBtn.onclick = () => undoSuggestion(idx);
+    rejectBtn.textContent = '✕ Close';
+    rejectBtn.onclick = () => closeSuggestionOverlay();
+  } else {
+    acceptBtn.textContent = '✓ Accept Change';
+    acceptBtn.className = 'btn btn-success';
+    acceptBtn.onclick = () => applySuggestion(idx);
+    rejectBtn.textContent = '✕ Dismiss';
+    rejectBtn.onclick = () => dismissSuggestion(idx);
+  }
+}
+
+function applySuggestion(idx) {
+  const s = pendingSuggestions[idx];
+  if (!s) return;
+  
+  const editorId = s.tab === 'thumbnails' ? 'thumbnails-editor' : `${s.tab}-editor`;
+  const editor = editors[editorId];
+  if (!editor) { console.error('Editor not found:', editorId); return; }
+  
+  const content = editor.getValue();
+  const newContent = content.replace(s.oldText, s.newText);
+  
+  if (newContent !== content) {
+    editor.setValue(newContent);
+    saveVideo();
+    s.applied = true;
+    const chip = document.getElementById(`suggestion-chip-${idx}`);
+    if (chip) { chip.innerHTML = '✅ Suggestion applied — <u>click to review/undo</u>'; chip.style.opacity = '0.7'; }
+  } else {
+    const chip = document.getElementById(`suggestion-chip-${idx}`);
+    if (chip) { chip.innerHTML = '⚠️ Text not found in editor — <u>click to review</u>'; }
+  }
+  closeSuggestionOverlay();
+}
+
+function undoSuggestion(idx) {
+  const s = pendingSuggestions[idx];
+  if (!s || !s.applied) return;
+  
+  const editorId = s.tab === 'thumbnails' ? 'thumbnails-editor' : `${s.tab}-editor`;
+  const editor = editors[editorId];
+  if (!editor) return;
+  
+  const content = editor.getValue();
+  const reverted = content.replace(s.newText, s.oldText);
+  
+  if (reverted !== content) {
+    editor.setValue(reverted);
+    saveVideo();
+    s.applied = false;
+    const chip = document.getElementById(`suggestion-chip-${idx}`);
+    if (chip) { chip.innerHTML = '💡 <u>Suggestion: ' + escapeHtml(s.section || s.tab) + '</u> (reverted)'; chip.style.opacity = '1'; }
+  }
+  closeSuggestionOverlay();
+}
+
+function dismissSuggestion(idx) {
+  const s = pendingSuggestions[idx];
+  if (s) s.dismissed = true;
+  const chip = document.getElementById(`suggestion-chip-${idx}`);
+  if (chip) { chip.innerHTML = '❌ Dismissed — <u>click to review</u>'; chip.style.opacity = '0.5'; }
+  closeSuggestionOverlay();
+}
+
+function closeSuggestionOverlay() {
+  $('#suggestion-overlay').classList.add('hidden');
+  activeSuggestionIdx = null;
 }
 
 function scrollChat() {
@@ -405,7 +796,7 @@ async function handleChatImage(file) {
   $('#chat-messages').insertAdjacentHTML('beforeend', `
     <div class="chat-message assistant" id="${streamId}">
       <span class="sender">Kona 🌺</span>
-      <div class="bubble"><span class="streaming-indicator"></span></div>
+      <div class="bubble"><span class="streaming-indicator"><span></span></span></div>
     </div>
   `);
   scrollChat();
@@ -454,15 +845,6 @@ async function handleChatImage(file) {
   updateTokenBar();
 }
 
-function openImagePreview(url) {
-  $('#image-preview-img').src = url;
-  $('#image-preview-overlay').classList.remove('hidden');
-}
-
-function closeImagePreview() {
-  $('#image-preview-overlay').classList.add('hidden');
-}
-
 // === Chat ===
 async function sendMessage() {
   const input = $('#chat-input');
@@ -486,7 +868,7 @@ async function sendMessage() {
   $('#chat-messages').insertAdjacentHTML('beforeend', `
     <div class="chat-message assistant" id="${streamId}">
       <span class="sender">Kona 🌺</span>
-      <div class="bubble"><span class="streaming-indicator"></span></div>
+      <div class="bubble"><span class="streaming-indicator"><span></span></span></div>
     </div>
   `);
   scrollChat();
@@ -666,6 +1048,21 @@ function switchTab(tabName) {
   if (editors[editorId]) {
     setTimeout(() => editors[editorId].refresh(), 10);
   }
+  
+  // Run SEO analysis when switching to SEO tab
+  if (tabName === 'seo') {
+    analyzeSEO();
+  }
+  
+  // Load timeline when switching to timeline tab
+  if (tabName === 'timeline') {
+    loadTimeline();
+  }
+  
+  // Load references when switching to references tab
+  if (tabName === 'references') {
+    loadReferences();
+  }
 }
 
 // === Auto-save ===
@@ -708,6 +1105,12 @@ async function saveVideo() {
     indicator.textContent = 'Saved ✓';
     indicator.classList.remove('saving');
     setTimeout(() => { indicator.textContent = 'Saved'; }, 2000);
+    
+    // Update SEO analysis if SEO tab is active
+    const seoTab = document.getElementById('editor-seo');
+    if (seoTab && seoTab.classList.contains('active')) {
+      analyzeSEO();
+    }
   } catch (err) {
     indicator.textContent = 'Save failed';
     indicator.classList.add('saving');
@@ -735,6 +1138,7 @@ function loadUploads() {
   if (!currentVideo?.uploads) return;
 
   const gallery = $('#thumbnail-gallery');
+  if (!gallery) return;
   gallery.innerHTML = currentVideo.uploads.map(u =>
     `<img src="/uploads/${currentVideo.id}/${u.filename}" alt="${escapeHtml(u.original_name)}" title="${escapeHtml(u.original_name)}">`
   ).join('');
@@ -781,6 +1185,13 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function unescapeHtml(str) {
+  if (!str) return '';
+  const div = document.createElement('div');
+  div.innerHTML = str;
+  return div.textContent;
+}
+
 function debounce(fn, delay) {
   let timer;
   return (...args) => {
@@ -797,6 +1208,7 @@ async function loadThumbnails() {
   
   const current = $('#thumb-current');
   const timeline = $('#thumb-timeline');
+  if (!current || !timeline) return;
   
   if (versions.length === 0) {
     current.innerHTML = '<p class="thumb-empty">No thumbnails yet. Upload one above!</p>';
@@ -860,15 +1272,89 @@ function closeImagePreview() {
   $('#image-preview-overlay').classList.add('hidden');
 }
 
+// === TTS Preview ===
+async function previewVoiceover() {
+  const editor = editors['voiceover-editor'];
+  if (!editor) return;
+  const text = editor.getValue().trim();
+  if (!text) { 
+    showToast('No voiceover text to preview'); 
+    return; 
+  }
+  await generateTTS(text);
+}
+
+async function previewSelection() {
+  const editor = editors['voiceover-editor'];
+  if (!editor) return;
+  const selection = editor.getSelection().trim();
+  if (!selection) { 
+    showToast('Select some text first'); 
+    return; 
+  }
+  await generateTTS(selection);
+}
+
+async function generateTTS(text) {
+  const btn = document.getElementById('tts-btn');
+  const status = document.getElementById('tts-status');
+  const player = document.getElementById('tts-player');
+  
+  if (!btn || !status || !player) {
+    showToast('TTS UI elements not found');
+    return;
+  }
+  
+  if (text.length > 5000) {
+    showToast('Text too long (max 5000 chars). Select a section.');
+    return;
+  }
+  
+  btn.disabled = true;
+  status.textContent = '🔄 Generating...';
+  
+  try {
+    const res = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    const data = await res.json();
+    
+    if (data.error) {
+      status.textContent = '❌ ' + data.error;
+      showToast('TTS error: ' + data.error);
+      return;
+    }
+    
+    player.src = data.url;
+    player.classList.remove('hidden');
+    player.play();
+    status.textContent = `✅ ~${data.duration}s`;
+    showToast('Audio generated!');
+  } catch (err) {
+    status.textContent = '❌ Error generating audio';
+    showToast('Error generating audio: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // === Init ===
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  initEditors();
+  // NOTE: initEditors() is called in openVideo() after the workspace view is shown
   loadVideos();
   initResize();
 
+  const bind = (selector, event, handler) => {
+    const el = $(selector);
+    if (el) el.addEventListener(event, handler);
+    return el;
+  };
+
   // Navigation
-  $('#back-btn').addEventListener('click', () => {
+  bind('#back-btn', 'click', () => {
     saveVideo();
     currentVideo = null;
     showView('library');
@@ -876,15 +1362,15 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // New video
-  $('#new-video-btn').addEventListener('click', createNewVideo);
+  bind('#new-video-btn', 'click', createNewVideo);
 
   // Theme toggle
-  $('#theme-toggle').addEventListener('click', toggleTheme);
-  $('#theme-toggle-ws').addEventListener('click', toggleTheme);
+  bind('#theme-toggle', 'click', toggleTheme);
+  bind('#theme-toggle-ws', 'click', toggleTheme);
 
   // Chat send
-  $('#send-btn').addEventListener('click', sendMessage);
-  $('#chat-input').addEventListener('keydown', (e) => {
+  bind('#send-btn', 'click', sendMessage);
+  const chatInput = bind('#chat-input', 'keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -892,50 +1378,70 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Image paste handler on chat input
-  $('#chat-input').addEventListener('paste', async (e) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    
-    for (const item of items) {
-      if (item.type.startsWith('image/')) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (file) await handleChatImage(file);
-        return;
+  if (chatInput) {
+    chatInput.addEventListener('paste', async (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (file) await handleChatImage(file);
+          return;
+        }
       }
-    }
-  });
+    });
+
+    // Auto-resize textarea
+    chatInput.addEventListener('input', function() {
+      this.style.height = 'auto';
+      this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+    });
+  }
 
   // Drag-drop handler on chat messages area
   const chatArea = $('#chat-messages');
-  chatArea.addEventListener('dragover', (e) => { 
-    e.preventDefault(); 
-    chatArea.classList.add('drag-over'); 
-  });
-  chatArea.addEventListener('dragleave', () => chatArea.classList.remove('drag-over'));
-  chatArea.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    chatArea.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) {
-      await handleChatImage(file);
-    }
-  });
-
-  // Auto-resize textarea
-  $('#chat-input').addEventListener('input', function() {
-    this.style.height = 'auto';
-    this.style.height = Math.min(this.scrollHeight, 120) + 'px';
-  });
+  if (chatArea) {
+    chatArea.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      chatArea.classList.add('drag-over');
+    });
+    chatArea.addEventListener('dragleave', () => chatArea.classList.remove('drag-over'));
+    chatArea.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      chatArea.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file && file.type.startsWith('image/')) {
+        await handleChatImage(file);
+      }
+    });
+  }
 
   // Tabs
   $$('.tab').forEach(tab => {
     tab.addEventListener('click', () => switchTab(tab.dataset.tab));
   });
 
+  // WPM input handler
+  const wpmInput = document.getElementById('wpm-input');
+  if (wpmInput) {
+    wpmInput.addEventListener('change', (e) => {
+      targetWPM = parseInt(e.target.value) || 150;
+      updateTimingWidget();
+    });
+    wpmInput.addEventListener('input', (e) => {
+      targetWPM = parseInt(e.target.value) || 150;
+      updateTimingWidget();
+    });
+  }
+
   // File upload
-  $('#upload-btn').addEventListener('click', () => $('#file-input').click());
-  $('#file-input').addEventListener('change', async (e) => {
+  bind('#upload-btn', 'click', () => {
+    const input = $('#file-input');
+    if (input) input.click();
+  });
+  bind('#file-input', 'change', async (e) => {
     const file = e.target.files[0];
     if (file) {
       await uploadFile(file);
@@ -944,16 +1450,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Modal keyboard
-  $('#new-video-title').addEventListener('keydown', (e) => {
+  bind('#new-video-title', 'keydown', (e) => {
     if (e.key === 'Enter') confirmNewVideo();
     if (e.key === 'Escape') closeModal();
   });
 
   // Close modals on overlay click
-  $('#modal-overlay').addEventListener('click', (e) => {
+  bind('#modal-overlay', 'click', (e) => {
     if (e.target === e.currentTarget) closeModal();
   });
-  $('#delete-overlay').addEventListener('click', (e) => {
+  bind('#delete-overlay', 'click', (e) => {
     if (e.target === e.currentTarget) closeDeleteModal();
   });
   
@@ -975,4 +1481,640 @@ document.addEventListener('DOMContentLoaded', () => {
       } 
     });
   }
+  
+  // Reference board file input
+  const refFileInput = document.getElementById('ref-file-input');
+  if (refFileInput) {
+    refFileInput.addEventListener('change', async (e) => {
+      if (!e.target.files[0] || !currentVideo) return;
+      const title = prompt('Title for this reference (optional):') || '';
+      const notes = prompt('Notes (optional):') || '';
+      const formData = new FormData();
+      formData.append('file', e.target.files[0]);
+      formData.append('item_type', 'image');
+      formData.append('title', title);
+      formData.append('notes', notes);
+      await fetch(`/api/videos/${currentVideo.id}/references`, { method: 'POST', body: formData });
+      e.target.value = '';
+      await loadReferences();
+    });
+  }
 });
+
+// --- Version History / Snapshots ---
+async function toggleSnapshotPanel() {
+  const panel = $('#snapshot-panel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) await loadSnapshots();
+}
+
+let selectedSnapshots = [];
+
+async function loadSnapshots() {
+  if (!currentVideo) return;
+  const res = await fetch(`/api/videos/${currentVideo.id}/snapshots`);
+  const snapshots = await res.json();
+  const list = $('#snapshot-list');
+  
+  if (snapshots.length === 0) {
+    list.innerHTML = '<p class="no-snapshots">No versions saved yet</p>';
+    return;
+  }
+  
+  // Clear selection
+  selectedSnapshots = [];
+  
+  // Add compare mode toggle if more than 1 snapshot
+  let html = '';
+  if (snapshots.length > 1) {
+    html += `
+      <div class="snapshot-toolbar">
+        <button class="btn btn-sm" onclick="toggleCompareMode()" id="compare-mode-btn">
+          🔍 Compare Versions
+        </button>
+        <button class="btn btn-success btn-sm hidden" onclick="showDiff()" id="compare-btn">
+          Compare Selected
+        </button>
+      </div>
+    `;
+  }
+  
+  html += snapshots.map(s => {
+    const date = new Date(s.created_at).toLocaleString();
+    const icon = s.created_by === 'manual' ? '📌' : '🔄';
+    return `<div class="snapshot-item" data-id="${s.id}">
+      <input type="checkbox" class="snapshot-checkbox hidden" onchange="updateCompareSelection(${s.id})" id="snap-${s.id}">
+      <div class="snapshot-info">
+        <span class="snapshot-label">${icon} ${escapeHtml(s.label)}</span>
+        <span class="snapshot-date">${date}</span>
+      </div>
+      <div class="snapshot-actions">
+        <button onclick="restoreSnapshot(${s.id})" title="Restore" class="btn-snapshot">↩️</button>
+        <button onclick="deleteSnapshot(${s.id})" title="Delete" class="btn-snapshot">🗑️</button>
+      </div>
+    </div>`;
+  }).join('');
+  
+  list.innerHTML = html;
+}
+
+function toggleCompareMode() {
+  const checkboxes = $$('.snapshot-checkbox');
+  const btn = $('#compare-mode-btn');
+  const isCompareMode = !checkboxes[0]?.classList.contains('hidden');
+  
+  checkboxes.forEach(cb => cb.classList.toggle('hidden', isCompareMode));
+  btn.textContent = isCompareMode ? '🔍 Compare Versions' : '✕ Cancel';
+  
+  if (isCompareMode) {
+    selectedSnapshots = [];
+    $('#compare-btn')?.classList.add('hidden');
+  }
+}
+
+function updateCompareSelection(id) {
+  const checkbox = $(`#snap-${id}`);
+  if (checkbox.checked) {
+    selectedSnapshots.push(id);
+  } else {
+    selectedSnapshots = selectedSnapshots.filter(sid => sid !== id);
+  }
+  
+  // Limit to 2 selections
+  if (selectedSnapshots.length > 2) {
+    const oldest = selectedSnapshots.shift();
+    const oldCheckbox = $(`#snap-${oldest}`);
+    if (oldCheckbox) oldCheckbox.checked = false;
+  }
+  
+  // Show/hide compare button
+  const compareBtn = $('#compare-btn');
+  if (selectedSnapshots.length === 2) {
+    compareBtn?.classList.remove('hidden');
+  } else {
+    compareBtn?.classList.add('hidden');
+  }
+}
+
+async function showDiff() {
+  if (selectedSnapshots.length !== 2) return;
+  
+  const res = await fetch(`/api/videos/${currentVideo.id}/snapshots/diff?a=${selectedSnapshots[0]}&b=${selectedSnapshots[1]}`);
+  const { a, b } = await res.json();
+  
+  // Create diff modal
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'diff-overlay';
+  overlay.innerHTML = `
+    <div class="modal modal-diff">
+      <div class="modal-header">
+        <h2>Compare Versions</h2>
+        <button class="btn-close" onclick="closeDiffModal()">✕</button>
+      </div>
+      <div class="diff-metadata">
+        <div class="diff-meta-item">
+          <strong>Version A:</strong> ${escapeHtml(a.label)} (${new Date(a.created_at).toLocaleString()})
+        </div>
+        <div class="diff-meta-item">
+          <strong>Version B:</strong> ${escapeHtml(b.label)} (${new Date(b.created_at).toLocaleString()})
+        </div>
+      </div>
+      <div class="diff-tabs">
+        <button class="diff-tab active" onclick="switchDiffTab('script')">Script</button>
+        <button class="diff-tab" onclick="switchDiffTab('description')">Description</button>
+        <button class="diff-tab" onclick="switchDiffTab('voiceover')">Voiceover</button>
+        <button class="diff-tab" onclick="switchDiffTab('thumbnails')">Thumbnail Ideas</button>
+      </div>
+      <div class="diff-content">
+        <div class="diff-view" id="diff-script">
+          <div class="diff-pane">
+            <h4>Version A</h4>
+            <pre class="diff-text">${escapeHtml(a.script_content || '(empty)')}</pre>
+          </div>
+          <div class="diff-pane">
+            <h4>Version B</h4>
+            <pre class="diff-text">${escapeHtml(b.script_content || '(empty)')}</pre>
+          </div>
+        </div>
+        <div class="diff-view hidden" id="diff-description">
+          <div class="diff-pane">
+            <h4>Version A</h4>
+            <pre class="diff-text">${escapeHtml(a.description || '(empty)')}</pre>
+          </div>
+          <div class="diff-pane">
+            <h4>Version B</h4>
+            <pre class="diff-text">${escapeHtml(b.description || '(empty)')}</pre>
+          </div>
+        </div>
+        <div class="diff-view hidden" id="diff-voiceover">
+          <div class="diff-pane">
+            <h4>Version A</h4>
+            <pre class="diff-text">${escapeHtml(a.voiceover_notes || '(empty)')}</pre>
+          </div>
+          <div class="diff-pane">
+            <h4>Version B</h4>
+            <pre class="diff-text">${escapeHtml(b.voiceover_notes || '(empty)')}</pre>
+          </div>
+        </div>
+        <div class="diff-view hidden" id="diff-thumbnails">
+          <div class="diff-pane">
+            <h4>Version A</h4>
+            <pre class="diff-text">${escapeHtml(a.thumbnail_ideas || '(empty)')}</pre>
+          </div>
+          <div class="diff-pane">
+            <h4>Version B</h4>
+            <pre class="diff-text">${escapeHtml(b.thumbnail_ideas || '(empty)')}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(overlay);
+  setTimeout(() => overlay.classList.add('active'), 10);
+}
+
+function switchDiffTab(tab) {
+  $$('.diff-tab').forEach(t => t.classList.toggle('active', t.textContent.toLowerCase() === tab));
+  $$('.diff-view').forEach(v => v.classList.toggle('hidden', !v.id.includes(tab)));
+}
+
+function closeDiffModal() {
+  const overlay = $('#diff-overlay');
+  if (overlay) {
+    overlay.classList.remove('active');
+    setTimeout(() => overlay.remove(), 300);
+  }
+}
+
+async function createSnapshot() {
+  if (!currentVideo) return;
+  const label = prompt('Version label (optional):') || 'Manual snapshot';
+  await fetch(`/api/videos/${currentVideo.id}/snapshots`, { 
+    method: 'POST', 
+    headers: {'Content-Type':'application/json'}, 
+    body: JSON.stringify({ label }) 
+  });
+  await loadSnapshots();
+}
+
+async function restoreSnapshot(id) {
+  if (!currentVideo) return;
+  if (!confirm('Restore this version? Current work will be auto-saved first.')) return;
+  
+  await fetch(`/api/videos/${currentVideo.id}/snapshots/${id}/restore`, { method: 'POST' });
+  await openVideo(currentVideo.id); // Reload everything
+  
+  // Close snapshot panel after restore
+  $('#snapshot-panel').classList.add('hidden');
+}
+
+async function deleteSnapshot(id) {
+  if (!currentVideo) return;
+  if (!confirm('Delete this snapshot?')) return;
+  
+  await fetch(`/api/videos/${currentVideo.id}/snapshots/${id}`, { method: 'DELETE' });
+  await loadSnapshots();
+}
+
+// --- Export Functions ---
+function toggleExportMenu() {
+  const menu = $('#export-menu');
+  if (!menu) return;
+  menu.classList.toggle('hidden');
+  
+  // Close menu when clicking outside
+  if (!menu.classList.contains('hidden')) {
+    setTimeout(() => {
+      document.addEventListener('click', closeExportMenuOutside, { once: true });
+    }, 100);
+  }
+}
+
+function closeExportMenuOutside(e) {
+  const menu = $('#export-menu');
+  const dropdown = e.target.closest('.export-dropdown');
+  if (!dropdown && menu && !menu.classList.contains('hidden')) {
+    menu.classList.add('hidden');
+  }
+}
+
+function exportVideo(format) {
+  if (!currentVideo) return;
+  window.open(`/api/videos/${currentVideo.id}/export/${format}`, '_blank');
+  toggleExportMenu();
+}
+
+async function copyDescription() {
+  if (!currentVideo) return;
+  const editor = editors['description-editor'];
+  const text = editor ? editor.getValue() : '';
+  
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Description copied to clipboard!');
+  } catch (err) {
+    showToast('Failed to copy to clipboard');
+  }
+  
+  toggleExportMenu();
+}
+
+function showToast(msg) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.classList.add('show'), 10);
+  setTimeout(() => { 
+    toast.classList.remove('show'); 
+    setTimeout(() => toast.remove(), 300); 
+  }, 2000);
+}
+
+// === Clear Chat ===
+async function clearChat() {
+  if (!currentVideo) return;
+  
+  if (!confirm('Clear chat history for this video? This will delete all messages in the current channel.')) {
+    return;
+  }
+  
+  try {
+    const res = await fetch(`/api/videos/${currentVideo.id}/channels/${currentChatChannel}/messages`, {
+      method: 'DELETE'
+    });
+    
+    if (!res.ok) throw new Error('Failed to clear chat');
+    
+    // Clear the chat display
+    const container = $('#chat-messages');
+    const channelNames = { script: 'script', description: 'description', thumbnail: 'thumbnails' };
+    const welcomeText = currentChatChannel === 'script' 
+      ? `Ready to work on "${escapeHtml(currentVideo.title)}"` 
+      : currentChatChannel === 'description' 
+      ? 'Let\'s craft the perfect description' 
+      : 'Let\'s design some thumbnails';
+    
+    container.innerHTML = `
+      <div class="chat-welcome">
+        <p>🌺 <strong>Kona here!</strong> ${welcomeText}. What are you thinking?</p>
+      </div>
+    `;
+    
+    showToast('Chat history cleared');
+  } catch (err) {
+    showToast('Failed to clear chat');
+    console.error(err);
+  }
+}
+
+// === Script Preview Toggle ===
+let scriptPreviewMode = false;
+
+function toggleScriptPreview() {
+  const editor = editors['script-editor'];
+  const preview = document.getElementById('script-preview');
+  const btn = document.getElementById('preview-toggle-btn');
+  const editorWrap = document.getElementById('script-editor');
+  
+  if (!editor || !preview || !btn || !editorWrap) return;
+  
+  scriptPreviewMode = !scriptPreviewMode;
+  
+  if (scriptPreviewMode) {
+    // Switch to preview mode
+    const markdown = editor.getValue();
+    const html = processMessageContent(markdown, false);
+    preview.innerHTML = html;
+    preview.classList.remove('hidden');
+    editorWrap.classList.add('hidden');
+    btn.textContent = '✏️ Edit';
+  } else {
+    // Switch to edit mode
+    preview.classList.add('hidden');
+    editorWrap.classList.remove('hidden');
+    btn.textContent = '👁️ Preview';
+  }
+}
+
+// === SEO Assistant ===
+function analyzeSEO() {
+  if (!currentVideo) return;
+  const title = document.getElementById('video-title')?.value || '';
+  const description = editors['description-editor']?.getValue() || '';
+  const script = editors['script-editor']?.getValue() || '';
+  
+  const checks = [];
+  let score = 0;
+  const maxScore = 100;
+  
+  // Title checks
+  if (title.length > 0) { checks.push({ pass: true, msg: 'Has title', points: 5 }); score += 5; }
+  else { checks.push({ pass: false, msg: 'Missing title', points: 0 }); }
+  
+  if (title.length >= 30 && title.length <= 60) { checks.push({ pass: true, msg: `Title length good (${title.length} chars)`, points: 10 }); score += 10; }
+  else if (title.length > 0) { checks.push({ pass: false, msg: `Title ${title.length < 30 ? 'too short' : 'too long'} (${title.length} chars, aim for 30-60)`, points: 0 }); }
+  
+  if (title.match(/[!?|\-:]/)) { checks.push({ pass: true, msg: 'Title has engaging punctuation', points: 5 }); score += 5; }
+  else if (title.length > 0) { checks.push({ pass: false, msg: 'Add punctuation (?, !, |, :) for engagement', points: 0 }); }
+  
+  // Description checks
+  if (description.length > 100) { checks.push({ pass: true, msg: `Description length good (${description.length} chars)`, points: 15 }); score += 15; }
+  else if (description.length > 0) { checks.push({ pass: false, msg: `Description too short (${description.length}/100+ chars)`, points: 5 }); score += 5; }
+  else { checks.push({ pass: false, msg: 'No description', points: 0 }); }
+  
+  if (description.match(/https?:\/\//)) { checks.push({ pass: true, msg: 'Has links in description', points: 10 }); score += 10; }
+  else { checks.push({ pass: false, msg: 'Add links (social, website)', points: 0 }); }
+  
+  if (description.includes('#')) { checks.push({ pass: true, msg: 'Has hashtags', points: 10 }); score += 10; }
+  else { checks.push({ pass: false, msg: 'Add 3-5 hashtags at the end', points: 0 }); }
+  
+  const hasTimestamps = description.match(/\d{1,2}:\d{2}/g);
+  if (hasTimestamps && hasTimestamps.length >= 3) { checks.push({ pass: true, msg: `Has timestamps (${hasTimestamps.length})`, points: 15 }); score += 15; }
+  else { checks.push({ pass: false, msg: 'Add timestamps (improves SEO + chapters)', points: 0 }); }
+  
+  if (description.length >= 500) { checks.push({ pass: true, msg: 'Rich description (500+ chars)', points: 10 }); score += 10; }
+  
+  // First 150 chars matter most (shown in search)
+  const first150 = description.substring(0, 150);
+  if (first150.length >= 100) { checks.push({ pass: true, msg: 'Strong opening paragraph (visible in search)', points: 10 }); score += 10; }
+  else { checks.push({ pass: false, msg: 'First 150 chars appear in search — make them count', points: 0 }); }
+  
+  // Script-based checks
+  if (script.length > 500) { checks.push({ pass: true, msg: 'Has substantial script', points: 10 }); score += 10; }
+  
+  // Render
+  const scoreEl = document.getElementById('score-circle');
+  const checksEl = document.getElementById('seo-checks');
+  const descAnalysis = document.getElementById('desc-analysis');
+  
+  if (scoreEl) {
+    scoreEl.textContent = score;
+    scoreEl.style.borderColor = score >= 70 ? '#22c55e' : score >= 40 ? '#f59e0b' : '#ef4444';
+  }
+  
+  if (checksEl) {
+    checksEl.innerHTML = checks.map(c => `
+      <div class="seo-check ${c.pass ? 'pass' : 'fail'}">
+        <span>${c.pass ? '✅' : '❌'}</span>
+        <span>${escapeHtml(c.msg)}</span>
+      </div>
+    `).join('');
+  }
+  
+  if (descAnalysis) {
+    descAnalysis.innerHTML = `
+      <div class="desc-stat">Characters: ${description.length} / 5000</div>
+      <div class="desc-stat">Words: ${description.trim() ? description.trim().split(/\s+/).length : 0}</div>
+      <div class="desc-stat">Links: ${(description.match(/https?:\/\//g) || []).length}</div>
+      <div class="desc-stat">Hashtags: ${(description.match(/#\w+/g) || []).length}</div>
+    `;
+  }
+}
+
+async function generateTitleVariants() {
+  const container = document.getElementById('title-variants');
+  if (!container) return;
+  container.innerHTML = '<span class="loading">✨ Generating...</span>';
+  
+  const title = document.getElementById('video-title')?.value || '';
+  const description = editors['description-editor']?.getValue() || '';
+  
+  try {
+    const res = await fetch(`/api/videos/${currentVideo.id}/channels/description/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: `Generate 5 alternative YouTube title variants for this video. Current title: "${title}". Context: ${description.substring(0, 300)}. Just list the titles, numbered 1-5. Make them engaging and SEO-friendly (30-60 chars each).` })
+    });
+    
+    // Read the SSE stream
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try { const d = JSON.parse(line.slice(6)); if (d.type === 'text') text += d.content; } catch(e) {}
+      }
+    }
+    
+    container.innerHTML = text.split('\n').filter(l => l.trim() && l.match(/^\d+\./)).map(l => 
+      `<div class="title-variant" onclick="applyTitle(this.textContent)">${escapeHtml(l.replace(/^\d+\.\s*/, ''))}</div>`
+    ).join('');
+  } catch(err) {
+    container.innerHTML = '<span class="error">Failed to generate</span>';
+  }
+}
+
+function applyTitle(title) {
+  document.getElementById('video-title').value = title.trim();
+  saveVideo();
+  showToast('Title updated!');
+}
+
+async function generateTags() {
+  const container = document.getElementById('tag-suggestions');
+  if (!container) return;
+  container.innerHTML = '<span class="loading">🏷️ Generating...</span>';
+  
+  const title = document.getElementById('video-title')?.value || '';
+  const description = editors['description-editor']?.getValue() || '';
+  const script = editors['script-editor']?.getValue() || '';
+  
+  try {
+    const res = await fetch(`/api/videos/${currentVideo.id}/channels/description/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: `Suggest 10-15 relevant YouTube tags for this video. Title: "${title}". Content: ${script.substring(0, 500)}. Return ONLY the tags as a comma-separated list.` })
+    });
+    
+    // Read the SSE stream
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try { const d = JSON.parse(line.slice(6)); if (d.type === 'text') text += d.content; } catch(e) {}
+      }
+    }
+    
+    const tags = text.split(',').map(t => t.trim().replace(/^["']|["']$/g, '')).filter(t => t);
+    container.innerHTML = tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('');
+  } catch(err) {
+    container.innerHTML = '<span class="error">Failed to generate</span>';
+  }
+}
+
+// === Timeline / Activity Log ===
+async function loadTimeline() {
+  if (!currentVideo) return;
+  const res = await fetch(`/api/videos/${currentVideo.id}/activity?limit=100`);
+  const activities = await res.json();
+  const panel = document.getElementById('timeline-panel');
+  
+  if (activities.length === 0) { 
+    panel.innerHTML = '<p class="empty-timeline">No activity yet</p>'; 
+    return; 
+  }
+  
+  // Group by date
+  const grouped = {};
+  activities.forEach(a => {
+    const date = new Date(a.created_at).toLocaleDateString();
+    if (!grouped[date]) grouped[date] = [];
+    grouped[date].push(a);
+  });
+  
+  const icons = {
+    'edit': '✏️', 
+    'message': '💬', 
+    'snapshot': '💾', 
+    'restore': '↩️',
+    'thumbnail_upload': '🖼️', 
+    'export': '📤', 
+    'template': '📋'
+  };
+  
+  panel.innerHTML = Object.entries(grouped).map(([date, items]) => `
+    <div class="timeline-date">
+      <h4>${date}</h4>
+      ${items.map(a => {
+        const time = new Date(a.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const icon = icons[a.action_type] || '🔵';
+        return `<div class="timeline-item">
+          <span class="timeline-time">${time}</span>
+          <span class="timeline-icon">${icon}</span>
+          <span class="timeline-actor ${a.actor.toLowerCase()}">${a.actor}</span>
+          <span class="timeline-detail">${escapeHtml(a.details || a.action_type)}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('');
+}
+
+// === Reference Board ===
+async function loadReferences() {
+  if (!currentVideo) return;
+  const res = await fetch(`/api/videos/${currentVideo.id}/references`);
+  const items = await res.json();
+  const grid = document.getElementById('ref-grid');
+  
+  if (items.length === 0) { 
+    grid.innerHTML = '<p class="empty-refs">No references yet. Add images, links, or notes for inspiration.</p>'; 
+    return; 
+  }
+  
+  grid.innerHTML = items.map(item => {
+    if (item.item_type === 'image') {
+      const src = item.filename ? `/uploads/${currentVideo.id}/${item.filename}` : item.url;
+      return `<div class="ref-card">
+        <img src="${src}" alt="${escapeHtml(item.title)}" onclick="openImagePreview('${src}')">
+        ${item.title ? `<div class="ref-title">${escapeHtml(item.title)}</div>` : ''}
+        ${item.notes ? `<div class="ref-notes">${escapeHtml(item.notes)}</div>` : ''}
+        <button class="ref-delete" onclick="deleteRef(${item.id})">✕</button>
+      </div>`;
+    } else if (item.item_type === 'link') {
+      return `<div class="ref-card ref-link">
+        <a href="${escapeHtml(item.url)}" target="_blank">🔗 ${escapeHtml(item.title || item.url)}</a>
+        ${item.notes ? `<div class="ref-notes">${escapeHtml(item.notes)}</div>` : ''}
+        <button class="ref-delete" onclick="deleteRef(${item.id})">✕</button>
+      </div>`;
+    } else {
+      return `<div class="ref-card ref-note">
+        ${item.title ? `<div class="ref-title">${escapeHtml(item.title)}</div>` : ''}
+        <div class="ref-notes">${escapeHtml(item.notes || '')}</div>
+        <button class="ref-delete" onclick="deleteRef(${item.id})">✕</button>
+      </div>`;
+    }
+  }).join('');
+}
+
+async function addRefImage() {
+  document.getElementById('ref-file-input').click();
+}
+
+async function addRefLink() {
+  const url = prompt('URL:');
+  if (!url) return;
+  const title = prompt('Title (optional):') || '';
+  const notes = prompt('Notes (optional):') || '';
+  await fetch(`/api/videos/${currentVideo.id}/references`, { 
+    method: 'POST', 
+    headers: {'Content-Type':'application/json'}, 
+    body: JSON.stringify({ item_type: 'link', url, title, notes }) 
+  });
+  await loadReferences();
+}
+
+async function addRefNote() {
+  const title = prompt('Note title:') || '';
+  const notes = prompt('Note content:');
+  if (!notes) return;
+  await fetch(`/api/videos/${currentVideo.id}/references`, { 
+    method: 'POST', 
+    headers: {'Content-Type':'application/json'}, 
+    body: JSON.stringify({ item_type: 'note', title, notes }) 
+  });
+  await loadReferences();
+}
+
+async function deleteRef(id) {
+  if (!confirm('Remove this reference?')) return;
+  await fetch(`/api/videos/${currentVideo.id}/references/${id}`, { method: 'DELETE' });
+  await loadReferences();
+}
