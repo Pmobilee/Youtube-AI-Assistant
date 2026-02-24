@@ -426,11 +426,12 @@ const editorById = Object.fromEntries(editorCatalog.map(editor => [editor.id, ed
 const defaultEditorId = editorCatalog[0].id;
 
 const textProviderCatalog = [
-  { id: 'anthropic', label: 'Claude (Anthropic)', envKey: 'ANTHROPIC_API_KEY' },
-  { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY' },
-  { id: 'xai', label: 'Grok (xAI)', envKey: 'XAI_API_KEY' },
-  { id: 'gemini', label: 'Gemini (Google AI Studio)', envKey: 'GEMINI_API_KEY' },
-  { id: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY' },
+  { id: 'anthropic', label: 'Claude (Anthropic)', envKey: 'ANTHROPIC_API_KEY', requiresKey: true },
+  { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY', requiresKey: true },
+  { id: 'xai', label: 'Grok (xAI)', envKey: 'XAI_API_KEY', requiresKey: true },
+  { id: 'gemini', label: 'Gemini (Google AI Studio)', envKey: 'GEMINI_API_KEY', requiresKey: true },
+  { id: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', requiresKey: true },
+  { id: 'ollama', label: 'Ollama (Local)', envKey: 'OLLAMA_API_KEY', requiresKey: false, baseUrlKey: 'OLLAMA_BASE_URL' },
 ];
 
 const textProviderIds = textProviderCatalog.map(p => p.id);
@@ -441,6 +442,7 @@ const defaultProviderModels = {
   xai: ['grok-4-0709', 'grok-3-mini'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   openrouter: ['anthropic/claude-sonnet-4.5', 'google/gemini-2.5-pro', 'openai/gpt-5-mini'],
+  ollama: ['llama3.1:8b', 'qwen2.5:7b', 'mistral:7b'],
 };
 
 function uniqStrings(items) {
@@ -471,6 +473,7 @@ const providerFallbackModels = {
   xai: parseCsv(process.env.NORA_WRITER_XAI_MODEL_OPTIONS, defaultProviderModels.xai),
   gemini: parseCsv(process.env.NORA_WRITER_GEMINI_MODEL_OPTIONS, defaultProviderModels.gemini),
   openrouter: parseCsv(process.env.NORA_WRITER_OPENROUTER_TEXT_MODELS, defaultProviderModels.openrouter),
+  ollama: parseCsv(process.env.NORA_WRITER_OLLAMA_MODEL_OPTIONS, defaultProviderModels.ollama),
 };
 
 function loadRuntimeSettings() {
@@ -790,9 +793,11 @@ let xaiClient = null;
 let openRouterClient = null;
 let geminiApiKey = '';
 let openRouterApiKey = '';
+let ollamaApiKey = '';
 let openRouterBaseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
 let openAiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 let xaiBaseUrl = process.env.XAI_BASE_URL || 'https://api.x.ai/v1';
+let ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 
 function refreshApiClients() {
   const anthropicApiKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
@@ -801,9 +806,11 @@ function refreshApiClients() {
   geminiApiKey = String(process.env.GEMINI_API_KEY || '').trim();
 
   openRouterApiKey = String(process.env.OPENROUTER_API_KEY || '').trim();
+  ollamaApiKey = String(process.env.OLLAMA_API_KEY || '').trim();
   openRouterBaseUrl = String(process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').trim();
   openAiBaseUrl = String(process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim();
   xaiBaseUrl = String(process.env.XAI_BASE_URL || 'https://api.x.ai/v1').trim();
+  ollamaBaseUrl = String(process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim();
 
   anthropicClient = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
   openAiClient = openAiApiKey ? new OpenAI({ apiKey: openAiApiKey, baseURL: openAiBaseUrl }) : null;
@@ -855,6 +862,7 @@ const modelCache = {
   xai: { models: [], fetchedAt: 0 },
   gemini: { models: [], fetchedAt: 0 },
   openrouter: { models: [], fetchedAt: 0 },
+  ollama: { models: [], fetchedAt: 0 },
 };
 
 function clearModelCache(provider = null) {
@@ -910,17 +918,33 @@ function sortTextModels(models) {
 function providerIsConfigured(provider) {
   const entry = textProviderCatalog.find(p => p.id === provider);
   if (!entry) return false;
+
+  if (entry.requiresKey === false) {
+    if (entry.id === 'ollama') {
+      return Boolean(String(ollamaBaseUrl || process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim());
+    }
+    return true;
+  }
+
   return Boolean(String(process.env[entry.envKey] || '').trim());
 }
 
 function providerStatus() {
   return textProviderCatalog.map(entry => {
     const raw = String(process.env[entry.envKey] || '').trim();
+    let configured = Boolean(raw);
+    let keyHint = maskSecret(raw);
+
+    if (entry.requiresKey === false && entry.id === 'ollama') {
+      configured = Boolean(String(ollamaBaseUrl || process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim());
+      keyHint = `base: ${ollamaBaseUrl || 'http://127.0.0.1:11434'}`;
+    }
+
     return {
       id: entry.id,
       label: entry.label,
-      configured: Boolean(raw),
-      keyHint: maskSecret(raw),
+      configured,
+      keyHint,
     };
   });
 }
@@ -999,6 +1023,24 @@ async function fetchGeminiModelIds() {
   );
 }
 
+async function fetchOllamaModelIds() {
+  const base = String(ollamaBaseUrl || 'http://127.0.0.1:11434').replace(/\/$/, '');
+  const response = await fetch(`${base}/api/tags`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(ollamaApiKey ? { Authorization: `Bearer ${ollamaApiKey}` } : {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Ollama model list failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  const rows = Array.isArray(payload?.models) ? payload.models : [];
+  return uniqStrings(rows.map(row => String(row?.name || '').trim()).filter(Boolean));
+}
+
 async function getAvailableTextModels({ provider = selectedTextProvider, force = false } = {}) {
   const normalizedProvider = textProviderIds.includes(provider) ? provider : 'anthropic';
   const cache = modelCache[normalizedProvider] || { models: [], fetchedAt: 0 };
@@ -1018,6 +1060,7 @@ async function getAvailableTextModels({ provider = selectedTextProvider, force =
     if (normalizedProvider === 'xai') discovered = await fetchOpenAIStyleModelIds(xaiClient);
     if (normalizedProvider === 'gemini') discovered = await fetchGeminiModelIds();
     if (normalizedProvider === 'openrouter') discovered = await fetchOpenRouterModelIds();
+    if (normalizedProvider === 'ollama') discovered = await fetchOllamaModelIds();
 
     const merged = sortTextModels([...discovered, ...fallback]);
     cache.models = merged;
@@ -1202,6 +1245,7 @@ function providerMissingKeyError(provider) {
   if (provider === 'xai') return 'XAI_API_KEY is missing.';
   if (provider === 'gemini') return 'GEMINI_API_KEY is missing.';
   if (provider === 'openrouter') return 'OPENROUTER_API_KEY is missing.';
+  if (provider === 'ollama') return 'Ollama is not reachable. Set OLLAMA_BASE_URL (default http://127.0.0.1:11434) and ensure Ollama is running.';
   return 'Required API key is missing.';
 }
 
@@ -1342,6 +1386,101 @@ async function runGeminiTextResponse({ model, systemPrompt, apiMessages, onText 
   return text;
 }
 
+function toOllamaMessages(systemPrompt, apiMessages) {
+  return toOpenAIMessages(systemPrompt, apiMessages).map(msg => {
+    const role = msg.role === 'assistant' ? 'assistant' : (msg.role === 'system' ? 'system' : 'user');
+    if (!Array.isArray(msg.content)) {
+      return { role, content: String(msg.content || '') };
+    }
+
+    const text = msg.content
+      .map(part => {
+        if (part?.type === 'text') return String(part.text || '');
+        if (part?.type === 'image_url' && part?.image_url?.url) return '[image attached]';
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+
+    return { role, content: text || '' };
+  });
+}
+
+async function runOllamaTextResponse({ model, systemPrompt, apiMessages, onText }) {
+  const base = String(ollamaBaseUrl || 'http://127.0.0.1:11434').replace(/\/$/, '');
+  const response = await fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(ollamaApiKey ? { Authorization: `Bearer ${ollamaApiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model,
+      messages: toOllamaMessages(systemPrompt, apiMessages),
+      stream: true,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Ollama generation failed (${response.status}): ${errText.slice(0, 240)}`);
+  }
+
+  if (!response.body) {
+    throw new Error('Ollama returned no response stream.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+
+  const parseLine = (line) => {
+    const trimmed = String(line || '').trim();
+    if (!trimmed) return;
+
+    let payload;
+    try {
+      payload = JSON.parse(trimmed);
+    } catch {
+      return;
+    }
+
+    if (payload?.error) {
+      throw new Error(String(payload.error));
+    }
+
+    const delta = String(payload?.message?.content || '');
+    if (delta) {
+      full += delta;
+      if (onText) onText(delta);
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      parseLine(line);
+    }
+  }
+
+  if (buffer.trim()) {
+    parseLine(buffer);
+  }
+
+  if (!full.trim()) {
+    throw new Error(`Ollama model ${model} returned empty output.`);
+  }
+
+  return full;
+}
+
 async function runProviderModelAttempt({ provider, model, systemPrompt, apiMessages, onText }) {
   if (provider === 'anthropic') {
     return streamAnthropicTextResponse({ systemPrompt, apiMessages, onText, model });
@@ -1382,6 +1521,10 @@ async function runProviderModelAttempt({ provider, model, systemPrompt, apiMessa
 
   if (provider === 'gemini') {
     return runGeminiTextResponse({ model, systemPrompt, apiMessages, onText });
+  }
+
+  if (provider === 'ollama') {
+    return runOllamaTextResponse({ model, systemPrompt, apiMessages, onText });
   }
 
   throw new Error(`Unsupported text provider: ${provider}`);
@@ -2026,6 +2169,7 @@ app.get('/api/settings', async (req, res) => {
     selectedEditorShortName: state.selectedEditorShortName,
     editors: state.editors,
     editorContext: getEditorContextMeta(state.selectedEditorId),
+    ollamaBaseUrl,
   });
 });
 
@@ -2040,10 +2184,12 @@ app.post('/api/settings', async (req, res) => {
     if (Object.prototype.hasOwnProperty.call(keys, 'xai')) envUpdates.XAI_API_KEY = String(keys.xai || '').trim();
     if (Object.prototype.hasOwnProperty.call(keys, 'gemini')) envUpdates.GEMINI_API_KEY = String(keys.gemini || '').trim();
     if (Object.prototype.hasOwnProperty.call(keys, 'openrouter')) envUpdates.OPENROUTER_API_KEY = String(keys.openrouter || '').trim();
+    if (Object.prototype.hasOwnProperty.call(keys, 'ollama')) envUpdates.OLLAMA_API_KEY = String(keys.ollama || '').trim();
 
     if (Object.prototype.hasOwnProperty.call(body, 'openRouterBaseUrl')) envUpdates.OPENROUTER_BASE_URL = String(body.openRouterBaseUrl || '').trim();
     if (Object.prototype.hasOwnProperty.call(body, 'openAiBaseUrl')) envUpdates.OPENAI_BASE_URL = String(body.openAiBaseUrl || '').trim();
     if (Object.prototype.hasOwnProperty.call(body, 'xaiBaseUrl')) envUpdates.XAI_BASE_URL = String(body.xaiBaseUrl || '').trim();
+    if (Object.prototype.hasOwnProperty.call(body, 'ollamaBaseUrl')) envUpdates.OLLAMA_BASE_URL = String(body.ollamaBaseUrl || '').trim();
 
     if (Object.keys(envUpdates).length > 0) {
       updateEnvFile(envUpdates);
@@ -2110,6 +2256,7 @@ app.post('/api/settings', async (req, res) => {
       providers: providerStatus(),
       selectedTextModel: selectedTextModel,
       selectedImageAnalysisProvider,
+      ollamaBaseUrl,
     });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Failed to save settings' });

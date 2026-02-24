@@ -106,6 +106,7 @@ function providerLabel(providerId) {
     xai: 'Grok (xAI)',
     gemini: 'Gemini',
     openrouter: 'OpenRouter',
+    ollama: 'Ollama (Local)',
     claude: 'Claude Vision',
     nanobanana: 'Nanobanana Vision',
   };
@@ -299,6 +300,7 @@ function renderProviderKeyHints(providers = []) {
     xai: '#settings-key-hint-xai',
     gemini: '#settings-key-hint-gemini',
     openrouter: '#settings-key-hint-openrouter',
+    ollama: '#settings-key-hint-ollama',
   };
 
   Object.entries(hintsById).forEach(([providerId, selector]) => {
@@ -352,6 +354,12 @@ async function loadSettingsPage() {
 
     renderProviderKeyHints(data.providers || []);
     applyModelState(data);
+
+    const ollamaBaseInput = $('#settings-ollama-base-url');
+    if (ollamaBaseInput) {
+      ollamaBaseInput.value = String(data.ollamaBaseUrl || ollamaBaseInput.value || 'http://127.0.0.1:11434');
+    }
+
     updateSettingsStatus('Settings loaded.');
   } catch (err) {
     updateSettingsStatus(`Failed to load settings: ${err.message}`, 'error');
@@ -373,12 +381,18 @@ async function saveSettings() {
     xai: $('#settings-key-xai'),
     gemini: $('#settings-key-gemini'),
     openrouter: $('#settings-key-openrouter'),
+    ollama: $('#settings-key-ollama'),
   };
 
   Object.entries(keyInputs).forEach(([provider, input]) => {
     const value = String(input?.value || '').trim();
     if (value) payload.keys[provider] = value;
   });
+
+  const ollamaBaseUrl = String($('#settings-ollama-base-url')?.value || '').trim();
+  if (ollamaBaseUrl) {
+    payload.ollamaBaseUrl = ollamaBaseUrl;
+  }
 
   try {
     updateSettingsStatus('Saving settings…');

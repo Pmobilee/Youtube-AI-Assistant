@@ -32,10 +32,21 @@ Open: **http://localhost:3000**
 ## Settings (first run)
 Open **⚙️ Settings** and:
 1. Pick your **editing app** (DaVinci / Premiere / Final Cut / After Effects / CapCut)
-2. Add the **API keys** you want to use (Claude / OpenAI / Grok / Gemini / OpenRouter)
+2. Add the **API keys** you want to use (Claude / OpenAI / Grok / Gemini / OpenRouter / optional Ollama key)
 3. Choose the **text model** + **image analysis provider**
+4. (Optional) set **Ollama base URL** to use local models
 
 Keys are stored only in your local `.env` and never shown in full.
+
+## Ollama (local models)
+Want fully local text inference? YAA supports Ollama as a text provider.
+
+1. Install + run Ollama locally
+2. Pull models you want (example: `ollama pull llama3.1:8b`)
+3. In YAA Settings, pick **Ollama (Local)** as provider
+4. Set base URL (default: `http://127.0.0.1:11434`)
+
+YAA will auto-fetch available Ollama models into the model dropdown.
 
 ## Editor context (RAG)
 When you switch editors, YAA pulls relevant docs context and injects it into the Tips + Editor Chat prompts. If docs aren’t reachable, it falls back to best‑practice context so you’re never blocked.
