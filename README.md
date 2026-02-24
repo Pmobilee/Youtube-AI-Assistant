@@ -62,12 +62,14 @@ If your live app is running from another folder (for example `/root/.openclaw/no
 ./scripts/sync-from-live.sh --source /root/.openclaw/nora-writer
 ```
 
-This sync excludes secrets/runtime files using `.syncignore` (`.env`, DB files, uploads, backups, etc.).
-To sync + push in one command (using Vault PAT):
+This sync excludes secrets/runtime files using `.syncignore` (`.env`, DB files, uploads, backups, etc.) and is non-destructive by default (keeps repo-only automation files).
+To sync + push in one command:
 
 ```bash
 ./scripts/sync-live-and-push.sh /root/.openclaw/nora-writer
 ```
+
+This tries normal git auth first (SSH key / app token), then falls back to Vault PAT helper if needed.
 
 Vault token helper (push only):
 
@@ -75,7 +77,7 @@ Vault token helper (push only):
 ./scripts/push-github-with-vault.sh github main
 ```
 
-Expected Vault entry name: `GitHub PAT` (password field = token).
+Expected Vault entry name (fallback mode): `GitHub PAT` (password field = token).
 
 ## Cross-platform release artifacts (Linux / Windows / macOS)
 A GitHub Actions workflow is included at `.github/workflows/release.yml`.

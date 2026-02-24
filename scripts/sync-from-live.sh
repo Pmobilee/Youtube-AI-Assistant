@@ -62,7 +62,8 @@ fi
 
 cd "$REPO_DIR"
 
-rsync -a --delete \
+# Non-destructive by default: no --delete, so repo-only automation files stay intact.
+rsync -a \
   --exclude-from="$REPO_DIR/.syncignore" \
   "$SOURCE_DIR/" "$REPO_DIR/"
 
