@@ -52,7 +52,9 @@ YAA will auto-fetch available Ollama models into the model dropdown.
 When you switch editors, YAA pulls relevant docs context and injects it into the Tips + Editor Chat prompts. If docs aren’t reachable, it falls back to best‑practice context so you’re never blocked.
 
 ## Releases
-Grab the latest cross‑platform builds from **GitHub Releases** (Linux / Windows / macOS). Each release includes a ready-to-run package.
+Current status: auto-publishing GitHub Releases is paused while we move to proper installer formats (`.deb`, `.exe`, `.dmg`).
+
+For now, use source + quick start above, or trigger build workflow manually when needed.
 
 ## Support
 If something feels off or you want a feature, open an issue or just fork and ship it. YAA is meant to be personal and adaptable.

@@ -1,9 +1,6 @@
 name: Build & Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -57,7 +54,7 @@ jobs:
 
   publish-release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && false
     runs-on: ubuntu-latest
 
     steps:
