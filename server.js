@@ -240,7 +240,12 @@ if (!fs.existsSync(globalMemoryPath)) {
 // --- Model clients: Claude everywhere, OpenRouter only for image tasks ---
 const runtimeSettingsPath = path.join(dataDir, 'runtime_settings.json');
 
-const textModelOptions = (process.env.NORA_WRITER_MODEL_OPTIONS || 'claude-3-7-sonnet-latest,claude-sonnet-4-5-20250929,claude-opus-4-1-20250805')
+const staticTextModelOptions = (process.env.NORA_WRITER_MODEL_OPTIONS || 'claude-sonnet-4-6,claude-opus-4-6,claude-sonnet-4-5-20250929')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const pinnedTextModels = (process.env.NORA_WRITER_MODEL_PINNED || 'claude-sonnet-4-6,claude-opus-4-6,claude-sonnet-4-5-20250929')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
@@ -265,10 +270,7 @@ function saveRuntimeSettings(next) {
 }
 
 const runtimeSettings = loadRuntimeSettings();
-let selectedTextModel = runtimeSettings.selectedTextModel || process.env.NORA_WRITER_MODEL || textModelOptions[0];
-if (!textModelOptions.includes(selectedTextModel)) {
-  selectedTextModel = textModelOptions[0];
-}
+let selectedTextModel = runtimeSettings.selectedTextModel || process.env.NORA_WRITER_MODEL || staticTextModelOptions[0] || pinnedTextModels[0] || 'claude-sonnet-4-6';
 
 const anthropicApiKey = process.env.ANTHROPIC_API_KEY || '';
 const anthropicClient = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
@@ -287,6 +289,110 @@ const imageModelCandidates = (
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+
+const modelCache = {
+  models: [],
+  fetchedAt: 0,
+};
+
+function uniqStrings(items) {
+  return [...new Set((items || []).filter(Boolean).map(s => String(s).trim()).filter(Boolean))];
+}
+
+function scoreModelForOrdering(modelId) {
+  const id = String(modelId || '').toLowerCase();
+  let score = 0;
+
+  if (id.includes('sonnet') && (id.includes('4-6') || id.includes('4.6'))) score += 1000;
+  if (id.includes('opus') && (id.includes('4-6') || id.includes('4.6'))) score += 950;
+  if (id.includes('sonnet') && (id.includes('4-5') || id.includes('4.5'))) score += 900;
+
+  if (id.includes('sonnet')) score += 120;
+  if (id.includes('opus')) score += 110;
+  if (id.includes('haiku')) score += 90;
+
+  const dateMatch = id.match(/(20\d{6})$/);
+  if (dateMatch) score += Number(dateMatch[1]) / 1000000;
+
+  return score;
+}
+
+function sortTextModels(models) {
+  return uniqStrings(models)
+    .sort((a, b) => {
+      const diff = scoreModelForOrdering(b) - scoreModelForOrdering(a);
+      if (diff !== 0) return diff;
+      return a.localeCompare(b);
+    });
+}
+
+async function fetchAnthropicModelIds() {
+  if (!anthropicClient) return [];
+
+  const ids = [];
+  let page = await anthropicClient.models.list({ limit: 100 });
+  while (page) {
+    const data = Array.isArray(page.data) ? page.data : [];
+    data.forEach(m => {
+      if (m?.id) ids.push(m.id);
+    });
+
+    if (typeof page.hasNextPage === 'function' && page.hasNextPage()) {
+      page = await page.getNextPage();
+    } else {
+      break;
+    }
+  }
+
+  return uniqStrings(ids);
+}
+
+async function getAvailableTextModels({ force = false } = {}) {
+  const now = Date.now();
+  const cacheTtlMs = 10 * 60 * 1000;
+
+  if (!force && modelCache.models.length > 0 && (now - modelCache.fetchedAt) < cacheTtlMs) {
+    return modelCache.models;
+  }
+
+  const fallback = sortTextModels([...pinnedTextModels, ...staticTextModelOptions]);
+
+  if (!anthropicClient) {
+    modelCache.models = fallback;
+    modelCache.fetchedAt = now;
+    return modelCache.models;
+  }
+
+  try {
+    const discovered = await fetchAnthropicModelIds();
+    modelCache.models = sortTextModels([...discovered, ...pinnedTextModels, ...staticTextModelOptions]);
+    modelCache.fetchedAt = now;
+    return modelCache.models;
+  } catch (err) {
+    console.warn('Anthropic model scan failed, using fallback list:', err.message);
+    modelCache.models = modelCache.models.length ? modelCache.models : fallback;
+    modelCache.fetchedAt = now;
+    return modelCache.models;
+  }
+}
+
+async function ensureSelectedTextModel() {
+  const models = await getAvailableTextModels();
+  if (!models.length) {
+    return { models: [], selectedModel: selectedTextModel };
+  }
+
+  if (!selectedTextModel || !models.includes(selectedTextModel)) {
+    selectedTextModel = models[0];
+    runtimeSettings.selectedTextModel = selectedTextModel;
+    saveRuntimeSettings(runtimeSettings);
+  }
+
+  return {
+    models,
+    selectedModel: selectedTextModel,
+  };
+}
 
 console.log(`✓ Nora Writer text provider: Anthropic | model=${selectedTextModel}`);
 console.log(`✓ Nora Writer image provider: OpenRouter | models=${imageModelCandidates.join(', ')}`);
@@ -413,12 +519,33 @@ async function generateResponse({ systemPrompt, apiMessages, onText }) {
     return streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText });
   }
 
-  return streamAnthropicTextResponse({
-    systemPrompt,
-    apiMessages,
-    onText,
-    model: selectedTextModel
-  });
+  const { models, selectedModel } = await ensureSelectedTextModel();
+  const tryModels = uniqStrings([selectedModel, ...models]).slice(0, 6);
+  let lastErr = null;
+
+  for (const model of tryModels) {
+    try {
+      const text = await streamAnthropicTextResponse({
+        systemPrompt,
+        apiMessages,
+        onText,
+        model,
+      });
+      if (text && text.trim()) {
+        if (selectedTextModel !== model) {
+          selectedTextModel = model;
+          runtimeSettings.selectedTextModel = selectedTextModel;
+          saveRuntimeSettings(runtimeSettings);
+        }
+        return text;
+      }
+    } catch (err) {
+      lastErr = err;
+      console.warn(`Anthropic model ${model} failed, trying next:`, err.message);
+    }
+  }
+
+  throw lastErr || new Error('All configured Claude text models failed.');
 }
 
 async function summarizeWithModel({ systemPrompt, userPrompt }) {
@@ -426,19 +553,39 @@ async function summarizeWithModel({ systemPrompt, userPrompt }) {
     throw new Error('ANTHROPIC_API_KEY is missing.');
   }
 
-  const result = await anthropicClient.messages.create({
-    model: selectedTextModel,
-    max_tokens: 1024,
-    system: systemPrompt,
-    messages: [{ role: 'user', content: userPrompt }]
-  });
+  const { models, selectedModel } = await ensureSelectedTextModel();
+  const tryModels = uniqStrings([selectedModel, ...models]).slice(0, 6);
+  let lastErr = null;
 
-  const text = (result?.content || [])
-    .filter(block => block?.type === 'text')
-    .map(block => block.text)
-    .join('');
+  for (const model of tryModels) {
+    try {
+      const result = await anthropicClient.messages.create({
+        model,
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }]
+      });
 
-  return text || '';
+      const text = (result?.content || [])
+        .filter(block => block?.type === 'text')
+        .map(block => block.text)
+        .join('');
+
+      if (text && text.trim()) {
+        if (selectedTextModel !== model) {
+          selectedTextModel = model;
+          runtimeSettings.selectedTextModel = selectedTextModel;
+          saveRuntimeSettings(runtimeSettings);
+        }
+        return text;
+      }
+    } catch (err) {
+      lastErr = err;
+      console.warn(`Summarization model ${model} failed, trying next:`, err.message);
+    }
+  }
+
+  throw lastErr || new Error('All Claude summarization models failed.');
 }
 
 // --- Load Kona's personality files for true integration ---
@@ -611,22 +758,25 @@ async function compactDavinciContext(keepRecent = 20) {
 
 // ============ API ROUTES ============
 
-app.get('/api/models', (req, res) => {
+app.get('/api/models', async (req, res) => {
+  const { models, selectedModel } = await ensureSelectedTextModel();
   res.json({
     provider: 'anthropic',
-    selectedModel: selectedTextModel,
-    models: textModelOptions,
+    selectedModel,
+    models,
     imageProvider: 'openrouter',
     imageModels: imageModelCandidates,
   });
 });
 
-app.post('/api/models/select', (req, res) => {
+app.post('/api/models/select', async (req, res) => {
   const { model } = req.body || {};
-  if (!model || !textModelOptions.includes(model)) {
+  const models = await getAvailableTextModels({ force: true });
+
+  if (!model || !models.includes(model)) {
     return res.status(400).json({
       error: 'Invalid model selection',
-      models: textModelOptions,
+      models,
       selectedModel: selectedTextModel,
     });
   }
@@ -635,7 +785,7 @@ app.post('/api/models/select', (req, res) => {
   runtimeSettings.selectedTextModel = selectedTextModel;
   saveRuntimeSettings(runtimeSettings);
 
-  res.json({ success: true, selectedModel: selectedTextModel });
+  res.json({ success: true, selectedModel: selectedTextModel, models });
 });
 
 app.get('/api/credits', (req, res) => {
