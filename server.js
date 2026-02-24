@@ -148,6 +148,34 @@ try {
   // Column already exists, that's fine
 }
 
+// Thumbnail versions schema upgrades
+const thumbnailVersionMigrations = [
+  'ALTER TABLE thumbnail_versions ADD COLUMN major_version INTEGER DEFAULT 1',
+  'ALTER TABLE thumbnail_versions ADD COLUMN minor_version INTEGER DEFAULT 0',
+  'ALTER TABLE thumbnail_versions ADD COLUMN parent_version_id INTEGER',
+  'ALTER TABLE thumbnail_versions ADD COLUMN source TEXT DEFAULT "upload"',
+  'ALTER TABLE thumbnail_versions ADD COLUMN analysis TEXT DEFAULT ""',
+  'ALTER TABLE thumbnail_versions ADD COLUMN analysis_provider TEXT DEFAULT ""',
+  'ALTER TABLE thumbnail_versions ADD COLUMN analysis_requested_at DATETIME',
+  'ALTER TABLE thumbnail_versions ADD COLUMN analysis_updated_at DATETIME',
+  'ALTER TABLE thumbnail_versions ADD COLUMN generation_prompt TEXT DEFAULT ""',
+];
+
+for (const migration of thumbnailVersionMigrations) {
+  try {
+    db.exec(migration);
+  } catch (e) {
+    // already exists
+  }
+}
+
+// Backfill major/minor for legacy rows
+try {
+  db.exec('UPDATE thumbnail_versions SET major_version = COALESCE(NULLIF(major_version, 0), version_number), minor_version = COALESCE(minor_version, 0)');
+} catch (e) {
+  // best effort
+}
+
 // DaVinci assistant tables (safe create)
 db.exec(`
   CREATE TABLE IF NOT EXISTS davinci_tips (
@@ -290,6 +318,37 @@ const imageModelCandidates = (
   .map(s => s.trim())
   .filter(Boolean);
 
+const imageGenerationModel = process.env.NORA_WRITER_NANOBANANA_MODEL || imageModelCandidates[0] || 'google/gemini-2.5-pro';
+const imageAnalysisProviderOptions = ['claude', 'nanobanana'];
+let selectedImageAnalysisProvider = runtimeSettings.selectedImageAnalysisProvider || process.env.NORA_WRITER_IMAGE_ANALYSIS_PROVIDER || 'claude';
+if (!imageAnalysisProviderOptions.includes(selectedImageAnalysisProvider)) {
+  selectedImageAnalysisProvider = 'claude';
+}
+
+const thumbnailResearchPath = process.env.NORA_WRITER_THUMBNAIL_RESEARCH_PATH || path.join(dataDir, 'thumbnail_research_bible.md');
+const thumbnailResearchCache = { text: '', loadedAt: 0 };
+
+function loadThumbnailResearchContext() {
+  const cacheTtlMs = 5 * 60 * 1000;
+  const now = Date.now();
+  if (thumbnailResearchCache.text && (now - thumbnailResearchCache.loadedAt) < cacheTtlMs) {
+    return thumbnailResearchCache.text;
+  }
+
+  try {
+    if (fs.existsSync(thumbnailResearchPath)) {
+      const text = fs.readFileSync(thumbnailResearchPath, 'utf-8');
+      thumbnailResearchCache.text = text.slice(0, 50000);
+      thumbnailResearchCache.loadedAt = now;
+      return thumbnailResearchCache.text;
+    }
+  } catch (err) {
+    console.warn('Could not read thumbnail research context:', err.message);
+  }
+
+  return '';
+}
+
 const modelCache = {
   models: [],
   fetchedAt: 0,
@@ -396,6 +455,7 @@ async function ensureSelectedTextModel() {
 
 console.log(`✓ Nora Writer text provider: Anthropic | model=${selectedTextModel}`);
 console.log(`✓ Nora Writer image provider: OpenRouter | models=${imageModelCandidates.join(', ')}`);
+console.log(`✓ Nora Writer image-analysis provider: ${selectedImageAnalysisProvider}`);
 
 function toOpenAIMessages(systemPrompt, apiMessages) {
   const normalized = (apiMessages || []).map(m => {
@@ -414,6 +474,51 @@ function toOpenAIMessages(systemPrompt, apiMessages) {
   return [{ role: 'system', content: systemPrompt }, ...normalized];
 }
 
+function getImageMediaType(filename) {
+  const ext = String(path.extname(filename || '')).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  return 'image/png';
+}
+
+function getLocalUploadPathFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.pathname.startsWith('/uploads/')) return null;
+    const rel = parsed.pathname.replace('/uploads/', '');
+    return path.join(uploadsDir, rel);
+  } catch (e) {
+    return null;
+  }
+}
+
+function convertLocalImageUrlsToBase64(apiMessages) {
+  return (apiMessages || []).map(m => {
+    if (!Array.isArray(m.content)) return m;
+    const parts = m.content.map(part => {
+      if (part?.type === 'image' && part?.source?.url) {
+        const localPath = getLocalUploadPathFromUrl(part.source.url);
+        if (localPath && fs.existsSync(localPath)) {
+          const data = fs.readFileSync(localPath).toString('base64');
+          return {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: getImageMediaType(localPath),
+              data,
+            }
+          };
+        }
+        return part;
+      }
+      return part;
+    });
+    return { ...m, content: parts };
+  });
+}
+
 function toAnthropicMessages(apiMessages) {
   return (apiMessages || []).map(m => {
     const role = m.role === 'assistant' ? 'assistant' : 'user';
@@ -428,6 +533,16 @@ function toAnthropicMessages(apiMessages) {
           source: {
             type: 'url',
             url: part.source.url
+          }
+        };
+      }
+      if (part?.type === 'image' && part?.source?.type === 'base64') {
+        return {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: part.source.media_type,
+            data: part.source.data,
           }
         };
       }
@@ -512,15 +627,9 @@ async function streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onTex
   throw lastErr || new Error('All configured OpenRouter image models failed.');
 }
 
-async function generateResponse({ systemPrompt, apiMessages, onText }) {
-  const useImageRoute = hasImageContent(apiMessages);
-
-  if (useImageRoute) {
-    return streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText });
-  }
-
+async function runClaudeWithModelFallback({ systemPrompt, apiMessages, onText, maxModels = 6 }) {
   const { models, selectedModel } = await ensureSelectedTextModel();
-  const tryModels = uniqStrings([selectedModel, ...models]).slice(0, 6);
+  const tryModels = uniqStrings([selectedModel, ...models]).slice(0, maxModels);
   let lastErr = null;
 
   for (const model of tryModels) {
@@ -546,6 +655,26 @@ async function generateResponse({ systemPrompt, apiMessages, onText }) {
   }
 
   throw lastErr || new Error('All configured Claude text models failed.');
+}
+
+async function runImageAnalysisResponse({ systemPrompt, apiMessages, onText, providerOverride = null }) {
+  const provider = providerOverride || selectedImageAnalysisProvider;
+  if (provider === 'nanobanana') {
+    return streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText });
+  }
+
+  const converted = convertLocalImageUrlsToBase64(apiMessages);
+  return runClaudeWithModelFallback({ systemPrompt, apiMessages: converted, onText, maxModels: 6 });
+}
+
+async function generateResponse({ systemPrompt, apiMessages, onText }) {
+  const useImageRoute = hasImageContent(apiMessages);
+
+  if (useImageRoute) {
+    return runImageAnalysisResponse({ systemPrompt, apiMessages, onText });
+  }
+
+  return runClaudeWithModelFallback({ systemPrompt, apiMessages, onText, maxModels: 6 });
 }
 
 async function summarizeWithModel({ systemPrompt, userPrompt }) {
@@ -586,6 +715,172 @@ async function summarizeWithModel({ systemPrompt, userPrompt }) {
   }
 
   throw lastErr || new Error('All Claude summarization models failed.');
+}
+
+function getThumbnailVersionLabel(version) {
+  const major = Number(version?.major_version || version?.version_number || 1);
+  const minor = Number(version?.minor_version || 0);
+  return `${major}.${minor}`;
+}
+
+function normalizeThumbnailVersion(version) {
+  if (!version) return version;
+  const major = Number(version.major_version || version.version_number || 1);
+  const minor = Number(version.minor_version || 0);
+  return {
+    ...version,
+    major_version: major,
+    minor_version: minor,
+    version_label: `${major}.${minor}`,
+  };
+}
+
+function buildLocalUploadUrl(videoId, filename) {
+  return `http://localhost:${PORT}/uploads/${videoId}/${filename}`;
+}
+
+function getNextThumbnailVersionMeta(videoId, parentVersionId = null) {
+  const latestGlobal = db.prepare('SELECT MAX(version_number) as max_v FROM thumbnail_versions WHERE video_id = ?').get(videoId);
+  const versionNumber = (latestGlobal?.max_v || 0) + 1;
+
+  if (parentVersionId) {
+    const parent = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ? AND video_id = ?').get(parentVersionId, videoId);
+    if (parent) {
+      const major = Number(parent.major_version || parent.version_number || 1);
+      const row = db.prepare('SELECT MAX(minor_version) as max_minor FROM thumbnail_versions WHERE video_id = ? AND major_version = ?').get(videoId, major);
+      const minor = Number(row?.max_minor || 0) + 1;
+      return { versionNumber, majorVersion: major, minorVersion: minor, parentVersionId: parent.id };
+    }
+  }
+
+  const latestMajor = db.prepare('SELECT MAX(major_version) as max_major FROM thumbnail_versions WHERE video_id = ?').get(videoId);
+  const majorVersion = Number(latestMajor?.max_major || 0) + 1;
+  return { versionNumber, majorVersion, minorVersion: 0, parentVersionId: null };
+}
+
+function extractJsonFromText(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    // continue
+  }
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    try {
+      return JSON.parse(fenced[1]);
+    } catch (e) {
+      // continue
+    }
+  }
+
+  const first = raw.indexOf('{');
+  const last = raw.lastIndexOf('}');
+  if (first !== -1 && last !== -1 && last > first) {
+    try {
+      return JSON.parse(raw.slice(first, last + 1));
+    } catch (e) {
+      // continue
+    }
+  }
+
+  return null;
+}
+
+async function generateImageWithNanobanana(prompt) {
+  if (!openRouterApiKey) {
+    throw new Error('OPENROUTER_API_KEY is missing for nanobanana image generation.');
+  }
+
+  const res = await fetch(`${openRouterBaseUrl}/images/generations`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${openRouterApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: imageGenerationModel,
+      prompt,
+      size: '1280x720',
+      n: 1,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Nanobanana generation failed (${res.status}): ${body.slice(0, 400)}`);
+  }
+
+  const payload = await res.json();
+  const first = payload?.data?.[0] || null;
+  if (!first) {
+    throw new Error('Nanobanana returned no images.');
+  }
+
+  if (first.b64_json) {
+    return Buffer.from(first.b64_json, 'base64');
+  }
+
+  if (first.url) {
+    const imgRes = await fetch(first.url);
+    if (!imgRes.ok) {
+      throw new Error(`Failed to download generated image: ${imgRes.status}`);
+    }
+    return Buffer.from(await imgRes.arrayBuffer());
+  }
+
+  throw new Error('Nanobanana response had no b64_json/url image payload.');
+}
+
+async function analyzeThumbnailVersion({ video, version, providerOverride = null, extraInstruction = '' }) {
+  const provider = providerOverride || selectedImageAnalysisProvider;
+  const imageUrl = buildLocalUploadUrl(video.id, version.filename);
+  const researchContext = loadThumbnailResearchContext();
+  const versionLabel = getThumbnailVersionLabel(version);
+
+  const systemPrompt = `You are Nora's thumbnail analysis specialist.
+
+Evaluate the provided YouTube thumbnail and return practical, high-signal feedback.
+
+Rules:
+- Be specific and visual.
+- Prioritize CTR + retention-safe packaging.
+- Give concrete edits Nora can apply immediately.
+- Keep it concise and structured.
+
+Use this research library as your benchmark:
+${researchContext || '(No research document loaded.)'}`;
+
+  const userText = `Video title: ${video.title}
+Thumbnail version: ${versionLabel}
+Notes: ${version.notes || '(none)'}
+
+Tasks:
+1) Score this thumbnail 1-10 for: clarity, curiosity, contrast, mobile legibility, title-synergy.
+2) Give top 5 changes in priority order.
+3) Provide 3 text-overlay options (max 5 words each).
+4) Provide 3 title-synergy hooks.
+${extraInstruction ? `5) Extra instruction from Nora: ${extraInstruction}` : ''}`;
+
+  const apiMessages = [{
+    role: 'user',
+    content: [
+      { type: 'text', text: userText },
+      { type: 'image', source: { type: 'url', url: imageUrl } },
+    ],
+  }];
+
+  const analysis = await runImageAnalysisResponse({
+    systemPrompt,
+    apiMessages,
+    onText: null,
+    providerOverride: provider,
+  });
+
+  return { analysis, provider, imageUrl, versionLabel };
 }
 
 // --- Load Kona's personality files for true integration ---
@@ -766,6 +1061,9 @@ app.get('/api/models', async (req, res) => {
     models,
     imageProvider: 'openrouter',
     imageModels: imageModelCandidates,
+    imageGenerationModel,
+    imageAnalysisProviders: imageAnalysisProviderOptions,
+    selectedImageAnalysisProvider,
   });
 });
 
@@ -786,6 +1084,27 @@ app.post('/api/models/select', async (req, res) => {
   saveRuntimeSettings(runtimeSettings);
 
   res.json({ success: true, selectedModel: selectedTextModel, models });
+});
+
+app.post('/api/models/image-analysis/select', (req, res) => {
+  const { provider } = req.body || {};
+  if (!provider || !imageAnalysisProviderOptions.includes(provider)) {
+    return res.status(400).json({
+      error: 'Invalid image-analysis provider',
+      providers: imageAnalysisProviderOptions,
+      selectedImageAnalysisProvider,
+    });
+  }
+
+  selectedImageAnalysisProvider = provider;
+  runtimeSettings.selectedImageAnalysisProvider = selectedImageAnalysisProvider;
+  saveRuntimeSettings(runtimeSettings);
+
+  res.json({
+    success: true,
+    selectedImageAnalysisProvider,
+    providers: imageAnalysisProviderOptions,
+  });
 });
 
 app.get('/api/credits', (req, res) => {
@@ -1131,18 +1450,43 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
       
       // If there's an image URL, format as vision API message
       if (m.image_url && m.role === 'user') {
-        // Extract the actual image URL (remove the message text)
         const imageUrlMatch = m.image_url;
         if (imageUrlMatch) {
           msg.content = [
             { type: 'text', text: m.content },
-            { type: 'image', source: { type: 'url', url: `http://localhost:3000${imageUrlMatch}` } }
+            { type: 'image', source: { type: 'url', url: `http://localhost:${PORT}${imageUrlMatch}` } }
           ];
         }
       }
       
       return msg;
     });
+
+  // Thumbnail channel: always attach latest uploaded thumbnail to the latest user turn
+  if (channelType === 'thumbnail') {
+    const latestThumb = db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? ORDER BY version_number DESC LIMIT 1').get(videoId);
+    if (latestThumb) {
+      const imagePart = {
+        type: 'image',
+        source: { type: 'url', url: buildLocalUploadUrl(videoId, latestThumb.filename) }
+      };
+
+      for (let i = apiMessages.length - 1; i >= 0; i--) {
+        if (apiMessages[i].role !== 'user') continue;
+
+        if (Array.isArray(apiMessages[i].content)) {
+          const hasImage = apiMessages[i].content.some(p => p?.type === 'image');
+          if (!hasImage) apiMessages[i].content.push(imagePart);
+        } else {
+          apiMessages[i].content = [
+            { type: 'text', text: String(apiMessages[i].content || '') },
+            imagePart,
+          ];
+        }
+        break;
+      }
+    }
+  }
   
   try {
     // Stream response via SSE
@@ -1212,53 +1556,240 @@ app.delete('/api/uploads/:id', (req, res) => {
 // Get all thumbnail versions for a video
 app.get('/api/videos/:videoId/thumbnails', (req, res) => {
   const versions = db.prepare(
-    'SELECT * FROM thumbnail_versions WHERE video_id = ? ORDER BY version_number DESC'
+    'SELECT * FROM thumbnail_versions WHERE video_id = ? ORDER BY major_version DESC, minor_version DESC, version_number DESC'
   ).all(req.params.videoId);
-  res.json(versions);
+  res.json(versions.map(normalizeThumbnailVersion));
 });
 
 // Upload a new thumbnail version
-app.post('/api/videos/:videoId/thumbnails', upload.single('file'), (req, res) => {
+app.post('/api/videos/:videoId/thumbnails', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
-  
-  const videoId = req.params.videoId;
+
+  const videoId = Number(req.params.videoId);
   const notes = req.body.notes || '';
-  
-  // Get next version number
-  const latest = db.prepare(
-    'SELECT MAX(version_number) as max_v FROM thumbnail_versions WHERE video_id = ?'
-  ).get(videoId);
-  const versionNumber = (latest?.max_v || 0) + 1;
-  
+  const parentVersionId = req.body.parentVersionId ? Number(req.body.parentVersionId) : null;
+  const source = req.body.source || 'upload';
+  const requestedProvider = req.body.analysisProvider || selectedImageAnalysisProvider;
+
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  const next = getNextThumbnailVersionMeta(videoId, parentVersionId);
+
   db.prepare(
-    'INSERT INTO thumbnail_versions (video_id, filename, original_name, notes, version_number) VALUES (?, ?, ?, ?, ?)'
-  ).run(videoId, req.file.filename, req.file.originalname, notes, versionNumber);
-  
-  // Also update the video's thumbnail field to the latest
+    `INSERT INTO thumbnail_versions
+      (video_id, filename, original_name, notes, version_number, major_version, minor_version, parent_version_id, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    videoId,
+    req.file.filename,
+    req.file.originalname,
+    notes,
+    next.versionNumber,
+    next.majorVersion,
+    next.minorVersion,
+    next.parentVersionId,
+    source
+  );
+
   db.prepare('UPDATE videos SET thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
     .run(`/uploads/${videoId}/${req.file.filename}`, videoId);
-  
-  // Log activity
+
   try {
     db.prepare('INSERT INTO activity_log (video_id, actor, action_type, details) VALUES (?, ?, ?, ?)')
-      .run(videoId, 'Nora', 'thumbnail_upload', `Version ${versionNumber}: ${req.file.originalname}`);
-  } catch(e) {
-    // activity_log table may not exist yet, ignore
+      .run(videoId, 'Nora', 'thumbnail_upload', `Version ${next.majorVersion}.${next.minorVersion}: ${req.file.originalname}`);
+  } catch (e) {
+    // ignore
   }
-  
-  const version = db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? AND version_number = ?')
-    .get(videoId, versionNumber);
-  res.json(version);
+
+  let version = db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? AND version_number = ?')
+    .get(videoId, next.versionNumber);
+
+  // Auto-analyze on every upload for the thumbnail channel
+  try {
+    const analyzed = await analyzeThumbnailVersion({
+      video,
+      version,
+      providerOverride: requestedProvider,
+    });
+
+    db.prepare('UPDATE thumbnail_versions SET analysis = ?, analysis_provider = ?, analysis_requested_at = CURRENT_TIMESTAMP, analysis_updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(analyzed.analysis, analyzed.provider, version.id);
+
+    version = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ?').get(version.id);
+  } catch (err) {
+    console.warn('Auto thumbnail analysis failed:', err.message);
+  }
+
+  res.json(normalizeThumbnailVersion(version));
+});
+
+app.post('/api/videos/:videoId/thumbnails/:versionId/analyze', async (req, res) => {
+  const videoId = Number(req.params.videoId);
+  const versionId = Number(req.params.versionId);
+  const { provider = selectedImageAnalysisProvider, instruction = '' } = req.body || {};
+
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  const version = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ? AND video_id = ?').get(versionId, videoId);
+  if (!version) return res.status(404).json({ error: 'Thumbnail version not found' });
+
+  try {
+    const analyzed = await analyzeThumbnailVersion({
+      video,
+      version,
+      providerOverride: provider,
+      extraInstruction: instruction,
+    });
+
+    db.prepare('UPDATE thumbnail_versions SET analysis = ?, analysis_provider = ?, analysis_requested_at = CURRENT_TIMESTAMP, analysis_updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(analyzed.analysis, analyzed.provider, version.id);
+
+    const updated = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ?').get(version.id);
+    res.json({
+      success: true,
+      provider: analyzed.provider,
+      analysis: analyzed.analysis,
+      version: normalizeThumbnailVersion(updated),
+    });
+  } catch (err) {
+    console.error('Thumbnail analysis failed:', err);
+    res.status(500).json({ error: err.message || 'Thumbnail analysis failed' });
+  }
+});
+
+app.post('/api/videos/:videoId/thumbnails/:versionId/improve', async (req, res) => {
+  const videoId = Number(req.params.videoId);
+  const versionId = Number(req.params.versionId);
+  const { instruction = '', analysisProvider = selectedImageAnalysisProvider } = req.body || {};
+
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  const baseVersion = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ? AND video_id = ?').get(versionId, videoId);
+  if (!baseVersion) return res.status(404).json({ error: 'Thumbnail version not found' });
+
+  try {
+    const analyzed = await analyzeThumbnailVersion({
+      video,
+      version: baseVersion,
+      providerOverride: analysisProvider,
+      extraInstruction: instruction,
+    });
+
+    const researchContext = loadThumbnailResearchContext();
+    const planSystemPrompt = `You are Nora's thumbnail optimization strategist.
+
+Return STRICT JSON with keys:
+- summary (string)
+- improvements (array of strings)
+- generation_prompt (string, detailed nanobanana-ready prompt for a 1280x720 thumbnail)
+- overlay_text_options (array of max-5-word strings)
+- title_synergy_hooks (array of strings)
+
+No markdown. No prose outside JSON.
+
+Use this thumbnail research bible as hard context:
+${researchContext || '(No research document loaded.)'}`;
+
+    const planUserPrompt = `Video title: ${video.title}
+Current version label: ${getThumbnailVersionLabel(baseVersion)}
+Current notes: ${baseVersion.notes || '(none)'}
+Image analysis provider: ${analyzed.provider}
+Image analysis:
+${analyzed.analysis}
+
+Extra instruction from Nora:
+${instruction || '(none)'}
+
+Create a stronger subversion while preserving truthful packaging and mobile legibility.`;
+
+    const planRaw = await runClaudeWithModelFallback({
+      systemPrompt: planSystemPrompt,
+      apiMessages: [{ role: 'user', content: planUserPrompt }],
+      onText: null,
+      maxModels: 4,
+    });
+
+    const planJson = extractJsonFromText(planRaw) || {};
+    const generationPrompt = String(planJson.generation_prompt || '').trim() ||
+      `Create a high-CTR truthful YouTube thumbnail for "${video.title}" using the following analysis: ${analyzed.analysis}`;
+
+    const imageBuffer = await generateImageWithNanobanana(generationPrompt);
+    const subMeta = getNextThumbnailVersionMeta(videoId, baseVersion.id);
+
+    const dir = path.join(uploadsDir, String(videoId));
+    fs.mkdirSync(dir, { recursive: true });
+
+    const filename = `${Date.now()}-nanobanana-${Math.random().toString(36).slice(2, 8)}.png`;
+    fs.writeFileSync(path.join(dir, filename), imageBuffer);
+
+    const notes = String(planJson.summary || '').trim() || `AI subversion from ${getThumbnailVersionLabel(baseVersion)}`;
+
+    db.prepare(
+      `INSERT INTO thumbnail_versions
+      (video_id, filename, original_name, notes, version_number, major_version, minor_version, parent_version_id, source, analysis, analysis_provider, analysis_requested_at, analysis_updated_at, generation_prompt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`
+    ).run(
+      videoId,
+      filename,
+      `nanobanana-${getThumbnailVersionLabel(baseVersion)}.png`,
+      notes,
+      subMeta.versionNumber,
+      subMeta.majorVersion,
+      subMeta.minorVersion,
+      subMeta.parentVersionId,
+      'nanobanana',
+      analyzed.analysis,
+      analyzed.provider,
+      generationPrompt,
+    );
+
+    db.prepare('UPDATE videos SET thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(`/uploads/${videoId}/${filename}`, videoId);
+
+    const created = db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? AND version_number = ?')
+      .get(videoId, subMeta.versionNumber);
+
+    try {
+      db.prepare('INSERT INTO activity_log (video_id, actor, action_type, details) VALUES (?, ?, ?, ?)')
+        .run(videoId, 'Kona', 'thumbnail_ai_subversion', `Generated v${subMeta.majorVersion}.${subMeta.minorVersion} via nanobanana`);
+    } catch (e) {
+      // ignore
+    }
+
+    res.json({
+      success: true,
+      baseVersion: normalizeThumbnailVersion(baseVersion),
+      createdVersion: normalizeThumbnailVersion(created),
+      plan: {
+        summary: planJson.summary || '',
+        improvements: Array.isArray(planJson.improvements) ? planJson.improvements : [],
+        overlay_text_options: Array.isArray(planJson.overlay_text_options) ? planJson.overlay_text_options : [],
+        title_synergy_hooks: Array.isArray(planJson.title_synergy_hooks) ? planJson.title_synergy_hooks : [],
+        generation_prompt: generationPrompt,
+      },
+    });
+  } catch (err) {
+    console.error('Thumbnail improve+generate failed:', err);
+    res.status(500).json({ error: err.message || 'Thumbnail improvement generation failed' });
+  }
 });
 
 // Delete a thumbnail version
 app.delete('/api/videos/:videoId/thumbnails/:versionId', (req, res) => {
   const version = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ?').get(req.params.versionId);
   if (!version) return res.status(404).json({ error: 'Not found' });
-  
+
   const filePath = path.join(uploadsDir, String(req.params.videoId), version.filename);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   db.prepare('DELETE FROM thumbnail_versions WHERE id = ?').run(req.params.versionId);
+
+  const latest = db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? ORDER BY version_number DESC LIMIT 1').get(req.params.videoId);
+  const thumbPath = latest ? `/uploads/${req.params.videoId}/${latest.filename}` : null;
+  db.prepare('UPDATE videos SET thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(thumbPath, req.params.videoId);
+
   res.json({ success: true });
 });
 
@@ -1823,6 +2354,14 @@ function buildChannelSystemPrompt(video, memory, globalMemory, channelType) {
   };
   
   prompt += channelFocus[channelType] || '';
+
+  if (channelType === 'thumbnail') {
+    const researchContext = loadThumbnailResearchContext();
+    if (researchContext) {
+      prompt += `\n\n## Thumbnail Research Bible (use as hard context)\n${researchContext}`;
+    }
+    prompt += `\n\n## Thumbnail Channel Operational Rules\n- Always evaluate the currently attached thumbnail image before giving advice.\n- Prefer specific, testable edits over generic taste comments.\n- Keep advice aligned with truthful packaging (high CTR + high retention).\n- Reference version labels (for example 2.3, 2.4) when discussing iterations.`;
+  }
   
   // Add cross-channel context summary
   const otherChannels = ['script', 'description', 'thumbnail'].filter(c => c !== channelType);

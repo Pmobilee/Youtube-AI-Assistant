@@ -8,7 +8,10 @@ let pendingSuggestions = [];
 let activeSuggestionIdx = null;
 let availableModels = [];
 let selectedModel = '';
+let selectedImageAnalysisProvider = 'claude';
 let creditsRefreshTimer = null;
+let thumbnailVersions = [];
+let selectedThumbnailVersionId = null;
 
 // === DOM refs ===
 const $ = (sel) => document.querySelector(sel);
@@ -75,24 +78,26 @@ function updateEditorThemes() {
 // === Global Model + Credits ===
 async function loadModelOptions() {
   const select = document.getElementById('global-model-select');
+  const imageSelect = document.getElementById('global-image-analysis-select');
   if (!select) return;
+
   try {
     const res = await fetch('/api/models');
     const data = await res.json();
     availableModels = data.models || [];
     selectedModel = data.selectedModel || '';
+    selectedImageAnalysisProvider = data.selectedImageAnalysisProvider || 'claude';
 
     if (!availableModels.length) {
       select.innerHTML = '<option value="">No models</option>';
-      return;
+    } else {
+      select.innerHTML = availableModels.map(m => {
+        const safe = (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<option value="${safe}">${safe}</option>`;
+      }).join('');
+
+      if (selectedModel) select.value = selectedModel;
     }
-
-    select.innerHTML = availableModels.map(m => {
-      const safe = (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      return `<option value="${safe}">${safe}</option>`;
-    }).join('');
-
-    if (selectedModel) select.value = selectedModel;
 
     select.onchange = async (e) => {
       const nextModel = e.target.value;
@@ -103,17 +108,45 @@ async function loadModelOptions() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: nextModel })
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Model switch failed');
-        selectedModel = data.selectedModel || nextModel;
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error || 'Model switch failed');
+        selectedModel = payload.selectedModel || nextModel;
         showToast(`Model set to ${selectedModel}`);
       } catch (err) {
         showToast('Model switch failed: ' + err.message);
         if (selectedModel) select.value = selectedModel;
       }
     };
+
+    if (imageSelect) {
+      const providers = data.imageAnalysisProviders || ['claude', 'nanobanana'];
+      imageSelect.innerHTML = providers.map(p => {
+        const label = p === 'claude' ? 'Claude Vision' : 'Nanobanana Vision';
+        return `<option value="${p}">${label}</option>`;
+      }).join('');
+      imageSelect.value = selectedImageAnalysisProvider;
+
+      imageSelect.onchange = async (e) => {
+        const provider = e.target.value;
+        try {
+          const res = await fetch('/api/models/image-analysis/select', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider })
+          });
+          const payload = await res.json();
+          if (!res.ok) throw new Error(payload.error || 'Image analysis switch failed');
+          selectedImageAnalysisProvider = payload.selectedImageAnalysisProvider || provider;
+          showToast(`Image analysis set to ${selectedImageAnalysisProvider}`);
+        } catch (err) {
+          showToast('Image analysis switch failed: ' + err.message);
+          imageSelect.value = selectedImageAnalysisProvider;
+        }
+      };
+    }
   } catch (err) {
     select.innerHTML = '<option value="">Model load failed</option>';
+    if (imageSelect) imageSelect.innerHTML = '<option value="claude">Claude Vision</option>';
   }
 }
 
@@ -470,6 +503,8 @@ async function openVideo(id) {
   loadUploads();
   
   // Load thumbnails
+  thumbnailVersions = [];
+  selectedThumbnailVersionId = null;
   loadThumbnails();
 
   // View already switched (done earlier to init editors)
@@ -1291,64 +1326,168 @@ function debounce(fn, delay) {
 }
 
 // === Thumbnails ===
+function getSelectedThumbnailVersion() {
+  return thumbnailVersions.find(v => Number(v.id) === Number(selectedThumbnailVersionId)) || null;
+}
+
+function renderSelectedThumbnail() {
+  const current = $('#thumb-current');
+  if (!current || !currentVideo) return;
+
+  const selected = getSelectedThumbnailVersion();
+  if (!selected) {
+    current.innerHTML = '<p class="thumb-empty">No thumbnail selected.</p>';
+    return;
+  }
+
+  const sourceLabel = selected.source === 'nanobanana' ? 'AI subversion' : 'Upload';
+  current.innerHTML = `
+    <img src="/uploads/${currentVideo.id}/${selected.filename}" alt="Current thumbnail" class="thumb-preview-large" onclick="openImagePreview('/uploads/${currentVideo.id}/${selected.filename}')">
+    <div class="thumb-version-label">v${selected.version_label || selected.version_number} • ${sourceLabel}</div>
+    <div class="thumb-version-meta">${selected.notes ? escapeHtml(selected.notes) : 'No notes'}</div>
+  `;
+
+  const analysisOutput = document.getElementById('thumb-analysis-output');
+  if (analysisOutput) {
+    if (selected.analysis) {
+      const provider = selected.analysis_provider ? `(${selected.analysis_provider})` : '';
+      analysisOutput.innerHTML = `<strong>Analysis ${provider}</strong><br>${escapeHtml(selected.analysis).replace(/\n/g, '<br>')}`;
+    } else {
+      analysisOutput.innerHTML = '<em>No analysis yet. Click “Analyze Selected”.</em>';
+    }
+  }
+}
+
 async function loadThumbnails() {
   if (!currentVideo) return;
   const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails`);
-  const versions = await res.json();
-  
+  thumbnailVersions = await res.json();
+
   const current = $('#thumb-current');
   const timeline = $('#thumb-timeline');
   if (!current || !timeline) return;
-  
-  if (versions.length === 0) {
+
+  if (!thumbnailVersions.length) {
     current.innerHTML = '<p class="thumb-empty">No thumbnails yet. Upload one above!</p>';
     timeline.innerHTML = '';
+    selectedThumbnailVersionId = null;
     return;
   }
-  
-  // Show latest version large
-  const latest = versions[0];
-  current.innerHTML = `
-    <img src="/uploads/${currentVideo.id}/${latest.filename}" alt="Current thumbnail" class="thumb-preview-large" onclick="openImagePreview('/uploads/${currentVideo.id}/${latest.filename}')">
-    <div class="thumb-version-label">v${latest.version_number} — ${latest.notes || 'No notes'}</div>
-  `;
-  
-  // Show timeline of all versions
-  timeline.innerHTML = versions.map(v => `
-    <div class="thumb-version-card ${v.id === latest.id ? 'active' : ''}" onclick="selectThumbnailVersion(${v.id}, '${v.filename}')">
-      <img src="/uploads/${currentVideo.id}/${v.filename}" alt="v${v.version_number}">
-      <div class="thumb-version-info">
-        <span class="thumb-v-number">v${v.version_number}</span>
-        <span class="thumb-v-date">${new Date(v.created_at).toLocaleDateString()}</span>
-        ${v.notes ? `<span class="thumb-v-notes">${escapeHtml(v.notes)}</span>` : ''}
+
+  if (!selectedThumbnailVersionId || !thumbnailVersions.some(v => Number(v.id) === Number(selectedThumbnailVersionId))) {
+    selectedThumbnailVersionId = thumbnailVersions[0].id;
+  }
+
+  timeline.innerHTML = thumbnailVersions.map(v => {
+    const source = v.source === 'nanobanana' ? '<span class="thumb-source-badge">AI</span>' : '';
+    return `
+      <div class="thumb-version-card ${Number(v.id) === Number(selectedThumbnailVersionId) ? 'active' : ''}" data-version-id="${v.id}" onclick="selectThumbnailVersion(${v.id})">
+        <img src="/uploads/${currentVideo.id}/${v.filename}" alt="v${v.version_label || v.version_number}">
+        <div class="thumb-version-info">
+          <span class="thumb-v-number">v${v.version_label || v.version_number}</span>
+          <span class="thumb-v-date">${new Date(v.created_at).toLocaleDateString()}</span>
+          ${source}
+          ${v.notes ? `<span class="thumb-v-notes">${escapeHtml(v.notes)}</span>` : ''}
+        </div>
+        <button class="thumb-delete" onclick="event.stopPropagation(); deleteThumbnailVersion(${currentVideo.id}, ${v.id})">✕</button>
       </div>
-      <button class="thumb-delete" onclick="event.stopPropagation(); deleteThumbnailVersion(${currentVideo.id}, ${v.id})">✕</button>
-    </div>
-  `).join('');
+    `;
+  }).join('');
+
+  renderSelectedThumbnail();
 }
 
-async function uploadThumbnail(file) {
+async function uploadThumbnail(file, parentVersionId = null, source = 'upload') {
+  if (!currentVideo) return;
   const notes = $('#thumb-notes')?.value || '';
   const formData = new FormData();
   formData.append('file', file);
   formData.append('notes', notes);
-  
-  await fetch(`/api/videos/${currentVideo.id}/thumbnails`, { method: 'POST', body: formData });
+  formData.append('source', source);
+  formData.append('analysisProvider', selectedImageAnalysisProvider || 'claude');
+  if (parentVersionId) formData.append('parentVersionId', String(parentVersionId));
+
+  const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails`, { method: 'POST', body: formData });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Upload failed');
+
   $('#thumb-notes').value = '';
+  selectedThumbnailVersionId = data.id;
   await loadThumbnails();
+}
+
+async function analyzeSelectedThumbnail() {
+  if (!currentVideo || !selectedThumbnailVersionId) return;
+  const instruction = ($('#thumb-improve-instruction')?.value || '').trim();
+  const btn = document.getElementById('thumb-analyze-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Analyzing…'; }
+
+  try {
+    const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails/${selectedThumbnailVersionId}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: selectedImageAnalysisProvider || 'claude', instruction }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Analyze failed');
+
+    const idx = thumbnailVersions.findIndex(v => Number(v.id) === Number(data.version.id));
+    if (idx >= 0) thumbnailVersions[idx] = data.version;
+
+    renderSelectedThumbnail();
+    showToast(`Analysis updated (${data.provider})`);
+  } catch (err) {
+    showToast('Analyze failed: ' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔬 Analyze Selected'; }
+  }
+}
+
+async function generateThumbnailSubversion() {
+  if (!currentVideo || !selectedThumbnailVersionId) return;
+  const instruction = ($('#thumb-improve-instruction')?.value || '').trim();
+  const btn = document.getElementById('thumb-generate-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+
+  try {
+    const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails/${selectedThumbnailVersionId}/improve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction, analysisProvider: selectedImageAnalysisProvider || 'claude' }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'AI subversion generation failed');
+
+    selectedThumbnailVersionId = data.createdVersion.id;
+    await loadThumbnails();
+
+    const plan = data.plan || {};
+    const out = document.getElementById('thumb-analysis-output');
+    if (out) {
+      out.innerHTML = `<strong>Generated subversion v${data.createdVersion.version_label}</strong><br>${escapeHtml(plan.summary || 'Done')}<br><br><strong>Prompt used:</strong><br>${escapeHtml(plan.generation_prompt || '')}`;
+    }
+
+    showToast(`Generated v${data.createdVersion.version_label}`);
+  } catch (err) {
+    showToast('Generation failed: ' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Generate AI Subversion'; }
+  }
 }
 
 async function deleteThumbnailVersion(videoId, versionId) {
   if (!confirm('Delete this thumbnail version?')) return;
   await fetch(`/api/videos/${videoId}/thumbnails/${versionId}`, { method: 'DELETE' });
+  if (Number(selectedThumbnailVersionId) === Number(versionId)) selectedThumbnailVersionId = null;
   await loadThumbnails();
 }
 
-function selectThumbnailVersion(versionId, filename) {
-  // Could show this version large in the current section
-  // For now, just update the active state
+function selectThumbnailVersion(versionId) {
+  selectedThumbnailVersionId = Number(versionId);
   document.querySelectorAll('.thumb-version-card').forEach(card => card.classList.remove('active'));
-  event.currentTarget.classList.add('active');
+  const selectedCard = document.querySelector(`.thumb-version-card[data-version-id="${versionId}"]`);
+  if (selectedCard) selectedCard.classList.add('active');
+  renderSelectedThumbnail();
 }
 
 function openImagePreview(src) {
@@ -1465,6 +1604,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Chat send
   bind('#send-btn', 'click', sendMessage);
   bind('#compact-chat-btn', 'click', compactCurrentChat);
+  bind('#thumb-analyze-btn', 'click', analyzeSelectedThumbnail);
+  bind('#thumb-generate-btn', 'click', generateThumbnailSubversion);
   const chatInput = bind('#chat-input', 'keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1567,11 +1708,21 @@ document.addEventListener('DOMContentLoaded', () => {
     thumbDrop.addEventListener('drop', async e => { 
       e.preventDefault(); 
       thumbDrop.classList.remove('drag-over'); 
-      if (e.dataTransfer.files[0]) await uploadThumbnail(e.dataTransfer.files[0]); 
+      if (e.dataTransfer.files[0]) {
+        try {
+          await uploadThumbnail(e.dataTransfer.files[0]);
+        } catch (err) {
+          showToast('Thumbnail upload failed: ' + err.message);
+        }
+      }
     });
     document.getElementById('thumb-file-input').addEventListener('change', async e => { 
       if (e.target.files[0]) { 
-        await uploadThumbnail(e.target.files[0]); 
+        try {
+          await uploadThumbnail(e.target.files[0]);
+        } catch (err) {
+          showToast('Thumbnail upload failed: ' + err.message);
+        }
         e.target.value = ''; 
       } 
     });

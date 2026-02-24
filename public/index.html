@@ -35,6 +35,10 @@
             <span>Model</span>
             <select id="global-model-select" class="status-select model-select-inline"></select>
           </label>
+          <label class="model-picker-inline">
+            <span>Image analysis</span>
+            <select id="global-image-analysis-select" class="status-select model-select-inline"></select>
+          </label>
         </div>
         <button id="theme-toggle-nav" class="btn btn-icon" title="Toggle dark mode">🌙</button>
       </div>
@@ -220,6 +224,16 @@
                 </div>
                 <div class="thumbnail-notes">
                   <textarea id="thumb-notes" placeholder="Notes for this version..."></textarea>
+                </div>
+                <div class="thumbnail-ai-controls">
+                  <textarea id="thumb-improve-instruction" placeholder="Optional: what to optimize (tone, emotion, style, title hook, etc.)"></textarea>
+                  <div class="thumbnail-ai-buttons">
+                    <button id="thumb-analyze-btn" class="toolbar-btn">🔬 Analyze Selected</button>
+                    <button id="thumb-generate-btn" class="toolbar-btn">✨ Generate AI Subversion</button>
+                  </div>
+                </div>
+                <div class="thumbnail-analysis-panel" id="thumb-analysis-output">
+                  <em>No analysis yet. Upload/select a thumbnail and run analysis.</em>
                 </div>
                 <h3>Version History</h3>
                 <div class="thumbnail-timeline" id="thumb-timeline">
