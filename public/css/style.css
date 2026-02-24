@@ -1712,10 +1712,39 @@ body {
   z-index: 100;
 }
 
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-logo-image {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid var(--border);
+  padding: 2px;
+}
+
+.nav-logo-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
 .nav-logo h1 {
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 800;
   margin: 0;
+  letter-spacing: 0.3px;
+}
+
+#app-brand-subtitle {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .nav-tabs {
@@ -2039,6 +2068,11 @@ body {
 .settings-field select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.settings-inline-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .settings-hint {

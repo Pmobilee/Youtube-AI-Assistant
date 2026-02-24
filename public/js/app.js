@@ -11,6 +11,13 @@ let selectedModel = '';
 let selectedTextProvider = 'anthropic';
 let availableTextProviders = [];
 let selectedImageAnalysisProvider = 'claude';
+let selectedEditorId = 'davinci-resolve';
+let selectedEditorName = 'DaVinci Resolve';
+let selectedEditorShortName = 'DaVinci';
+let selectedEditorTipsTitle = 'DaVinci Resolve Tips & Tricks';
+let selectedEditorChatTitle = 'DaVinci Chat';
+let availableEditors = [];
+let editorContextMeta = null;
 let thumbnailVersions = [];
 let selectedThumbnailVersionId = null;
 let isPaneSyncing = false;
@@ -134,6 +141,91 @@ function fillSelectOptions(selectEl, values = [], selectedValue = '', mapper = n
     : fallback;
 }
 
+function getEditorMeta(editorId = selectedEditorId, state = null) {
+  const pool = Array.isArray(state?.editors) ? state.editors : availableEditors;
+  const found = pool.find(e => e.id === editorId) || pool.find(e => e.id === selectedEditorId);
+  if (found) {
+    return {
+      id: found.id,
+      name: found.name || found.id,
+      shortName: found.shortName || found.name || found.id,
+      chatTitle: found.chatTitle || `${found.shortName || found.name} Chat`,
+      tipsTitle: found.tipsTitle || `${found.name || found.id} Tips & Tricks`,
+    };
+  }
+
+  return {
+    id: editorId,
+    name: selectedEditorName,
+    shortName: selectedEditorShortName,
+    chatTitle: selectedEditorChatTitle,
+    tipsTitle: selectedEditorTipsTitle,
+  };
+}
+
+function formatRelativeTime(ts) {
+  if (!ts) return 'not fetched yet';
+  const now = Date.now();
+  const delta = Math.max(0, now - ts);
+  const minutes = Math.floor(delta / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function updateEditorContextStatus(meta) {
+  const el = $('#settings-editor-docs-status');
+  if (!el) return;
+  if (!meta) {
+    el.textContent = 'Docs context: not loaded yet';
+    return;
+  }
+  const sources = meta.sourceCount ?? 0;
+  const chunks = meta.chunks ?? 0;
+  const fetched = formatRelativeTime(meta.fetchedAt);
+  const fallback = meta.fallbackUsed ? ' (fallback)' : '';
+  el.textContent = `Docs context: ${sources} sources, ${chunks} chunks, ${fetched}${fallback}`;
+}
+
+function applyEditorBranding() {
+  const meta = getEditorMeta(selectedEditorId);
+  selectedEditorName = meta.name;
+  selectedEditorShortName = meta.shortName;
+  selectedEditorTipsTitle = meta.tipsTitle;
+  selectedEditorChatTitle = meta.chatTitle;
+
+  const navChat = $('#nav-editor-chat-tab');
+  if (navChat) navChat.textContent = `💬 ${selectedEditorChatTitle}`;
+  const navTips = $('#nav-editor-tips-tab');
+  if (navTips) navTips.textContent = `📚 ${selectedEditorTipsTitle}`;
+
+  const chatTitle = $('#editor-chat-title');
+  if (chatTitle) chatTitle.textContent = `💬 ${selectedEditorChatTitle}`;
+  const chatSubtitle = $('#editor-chat-subtitle');
+  if (chatSubtitle) chatSubtitle.textContent = `Ask Kona about ${selectedEditorName}`;
+  const chatWelcome = $('#editor-chat-welcome');
+  if (chatWelcome) {
+    chatWelcome.innerHTML = `🌺 <strong>Hey Nora!</strong> Ask me anything about ${selectedEditorName}. I’ve got your ${selectedEditorName} tips doc loaded, so I know what you already know.`;
+  }
+  const chatInput = $('#davinci-input');
+  if (chatInput) chatInput.placeholder = `Ask about ${selectedEditorName}...`;
+
+  const tipsTitle = $('#editor-tips-title');
+  if (tipsTitle) tipsTitle.textContent = `📚 ${selectedEditorTipsTitle}`;
+  const tipsSearch = $('#tips-search');
+  if (tipsSearch) tipsSearch.placeholder = `🔍 Search ${selectedEditorShortName} tips...`;
+
+  // Expose to other scripts
+  window.getActiveEditorId = () => selectedEditorId;
+  window.getActiveEditorName = () => selectedEditorName;
+  window.getActiveEditorShortName = () => selectedEditorShortName;
+  window.getActiveEditorTipsTitle = () => selectedEditorTipsTitle;
+  window.getActiveEditorChatTitle = () => selectedEditorChatTitle;
+}
+
 function normalizeModelState(data = {}) {
   return {
     selectedTextProvider: data.selectedTextProvider || data.textProvider || selectedTextProvider,
@@ -142,6 +234,11 @@ function normalizeModelState(data = {}) {
     textProviders: data.textProviders || data.providers || availableTextProviders,
     selectedImageAnalysisProvider: data.selectedImageAnalysisProvider || selectedImageAnalysisProvider,
     imageAnalysisProviders: data.imageAnalysisProviders || ['claude', 'nanobanana'],
+    selectedEditorId: data.selectedEditorId || selectedEditorId,
+    selectedEditorName: data.selectedEditorName || selectedEditorName,
+    selectedEditorShortName: data.selectedEditorShortName || selectedEditorShortName,
+    editors: data.editors || availableEditors,
+    editorContext: data.editorContext || editorContextMeta,
   };
 }
 
@@ -152,10 +249,27 @@ function applyModelState(rawState = {}) {
   selectedImageAnalysisProvider = state.selectedImageAnalysisProvider || selectedImageAnalysisProvider;
   availableModels = Array.isArray(state.models) ? state.models : [];
   availableTextProviders = Array.isArray(state.textProviders) ? state.textProviders : [];
+  selectedEditorId = state.selectedEditorId || selectedEditorId;
+  availableEditors = Array.isArray(state.editors) ? state.editors : availableEditors;
+  editorContextMeta = state.editorContext || editorContextMeta;
 
+  const editorMeta = getEditorMeta(selectedEditorId, state);
+  selectedEditorName = editorMeta.name || selectedEditorName;
+  selectedEditorShortName = editorMeta.shortName || selectedEditorShortName;
+  selectedEditorTipsTitle = editorMeta.tipsTitle || selectedEditorTipsTitle;
+  selectedEditorChatTitle = editorMeta.chatTitle || selectedEditorChatTitle;
+
+  const editorSelect = $('#settings-editor-select');
   const providerSelect = $('#settings-text-provider-select');
   const modelSelect = $('#settings-text-model-select');
   const imageAnalysisSelect = $('#settings-image-analysis-select');
+
+  if (editorSelect) {
+    fillSelectOptions(editorSelect, availableEditors, selectedEditorId, (entry) => {
+      const label = typeof entry === 'string' ? entry : entry?.name || entry?.id || '';
+      return label;
+    });
+  }
 
   if (providerSelect) {
     fillSelectOptions(providerSelect, availableTextProviders, selectedTextProvider, (entry) => {
@@ -173,6 +287,9 @@ function applyModelState(rawState = {}) {
   if (imageAnalysisSelect) {
     fillSelectOptions(imageAnalysisSelect, state.imageAnalysisProviders, selectedImageAnalysisProvider, (entry) => providerLabel(typeof entry === 'string' ? entry : entry?.id));
   }
+
+  applyEditorBranding();
+  updateEditorContextStatus(editorContextMeta);
 }
 
 function renderProviderKeyHints(providers = []) {
@@ -243,6 +360,7 @@ async function loadSettingsPage() {
 
 async function saveSettings() {
   const payload = {
+    selectedEditorId,
     selectedTextProvider,
     selectedTextModel: selectedModel,
     selectedImageAnalysisProvider,
@@ -304,6 +422,51 @@ function bindSettingsEvents() {
   });
 
   $('#settings-save-btn')?.addEventListener('click', saveSettings);
+
+  $('#settings-refresh-editor-context-btn')?.addEventListener('click', async () => {
+    try {
+      updateSettingsStatus('Refreshing editor docs context…');
+      const res = await fetch('/api/editors/context/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ editorId: selectedEditorId })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Editor context refresh failed');
+
+      editorContextMeta = data.editorContext || data;
+      updateEditorContextStatus(editorContextMeta);
+      updateSettingsStatus('Editor docs context refreshed.', 'success');
+      showToast('Editor docs refreshed');
+    } catch (err) {
+      updateSettingsStatus(`Editor docs refresh failed: ${err.message}`, 'error');
+      showToast('Editor docs refresh failed: ' + err.message);
+    }
+  });
+
+  $('#settings-editor-select')?.addEventListener('change', async (e) => {
+    const nextEditor = String(e.target.value || '').trim();
+    if (!nextEditor) return;
+    try {
+      updateSettingsStatus('Switching editor…');
+      const res = await fetch('/api/editors/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ editorId: nextEditor })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Editor switch failed');
+
+      applyModelState(data);
+      updateSettingsStatus(`Editor set to ${selectedEditorName}.`, 'success');
+      if (typeof loadTips === 'function') loadTips();
+      if (typeof loadDavinciChat === 'function') loadDavinciChat();
+    } catch (err) {
+      updateSettingsStatus(`Editor switch failed: ${err.message}`, 'error');
+      showToast('Editor switch failed: ' + err.message);
+      loadSettingsPage();
+    }
+  });
 
   $('#settings-text-provider-select')?.addEventListener('change', async (e) => {
     const provider = String(e.target.value || '').trim();

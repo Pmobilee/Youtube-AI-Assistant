@@ -1,6 +1,19 @@
 /**
- * DaVinci Resolve Tips & Chat functionality
+ * Editor Tips & Chat functionality
  */
+
+function getEditorState() {
+  const id = typeof window.getActiveEditorId === 'function' ? window.getActiveEditorId() : 'davinci-resolve';
+  const name = typeof window.getActiveEditorName === 'function' ? window.getActiveEditorName() : 'DaVinci Resolve';
+  const shortName = typeof window.getActiveEditorShortName === 'function' ? window.getActiveEditorShortName() : 'DaVinci';
+  const tipsTitle = typeof window.getActiveEditorTipsTitle === 'function'
+    ? window.getActiveEditorTipsTitle()
+    : `${name} Tips & Tricks`;
+  const chatTitle = typeof window.getActiveEditorChatTitle === 'function'
+    ? window.getActiveEditorChatTitle()
+    : `${shortName} Chat`;
+  return { id, name, shortName, tipsTitle, chatTitle };
+}
 
 // ============ Section Switching ============
 
@@ -42,9 +55,11 @@ let currentEditingTip = null;
 
 async function loadTips(searchQuery = '') {
   try {
-    const url = searchQuery 
-      ? `/api/davinci/tips?search=${encodeURIComponent(searchQuery)}`
-      : '/api/davinci/tips';
+    const editor = getEditorState();
+    const base = `/api/davinci/tips?editorId=${encodeURIComponent(editor.id)}`;
+    const url = searchQuery
+      ? `${base}&search=${encodeURIComponent(searchQuery)}`
+      : base;
     const res = await fetch(url);
     tipsData = await res.json();
     renderTips();
@@ -56,10 +71,11 @@ async function loadTips(searchQuery = '') {
 function renderTips() {
   const container = document.getElementById('tips-content');
   if (!tipsData || tipsData.length === 0) {
+    const editor = getEditorState();
     container.innerHTML = `
       <div class="tips-empty">
         <h3>No tips yet</h3>
-        <p>Add your first DaVinci Resolve tip to get started</p>
+        <p>Add your first ${editor.name} tip to get started</p>
       </div>
     `;
     return;
@@ -248,10 +264,11 @@ async function addNewSection() {
   if (!title) return;
   
   try {
+    const editor = getEditorState();
     const res = await fetch('/api/davinci/tips', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, level: 0 })
+      body: JSON.stringify({ title, level: 0, editorId: editor.id })
     });
     
     if (!res.ok) throw new Error('Failed to create');
@@ -268,10 +285,11 @@ async function addSubsection(parentId) {
   if (!title) return;
   
   try {
+    const editor = getEditorState();
     const res = await fetch('/api/davinci/tips', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ parent_id: parentId, title, level: 1 })
+      body: JSON.stringify({ parent_id: parentId, title, level: 1, editorId: editor.id })
     });
     
     if (!res.ok) throw new Error('Failed to create');
@@ -327,7 +345,8 @@ let davinciChatMessages = [];
 
 async function loadDavinciChat() {
   try {
-    const res = await fetch('/api/davinci/chat/messages');
+    const editor = getEditorState();
+    const res = await fetch(`/api/davinci/chat/messages?editorId=${encodeURIComponent(editor.id)}`);
     davinciChatMessages = await res.json();
     renderDavinciChat();
     updateDavinciTokenBar();
@@ -342,7 +361,8 @@ async function updateDavinciTokenBar() {
   if (!fill || !text) return;
 
   try {
-    const res = await fetch('/api/davinci/chat/tokens');
+    const editor = getEditorState();
+    const res = await fetch(`/api/davinci/chat/tokens?editorId=${encodeURIComponent(editor.id)}`);
     const data = await res.json();
 
     const percentage = data.percentage;
@@ -367,10 +387,11 @@ async function compactDavinciChat() {
   const btn = document.getElementById('davinci-compact-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Compacting…'; }
   try {
+    const editor = getEditorState();
     const res = await fetch('/api/davinci/chat/compact', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keepRecent: 20 })
+      body: JSON.stringify({ keepRecent: 20, editorId: editor.id })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Compaction failed');
@@ -388,9 +409,10 @@ async function compactDavinciChat() {
 function renderDavinciChat() {
   const container = document.getElementById('davinci-chat-messages');
   if (!davinciChatMessages || davinciChatMessages.length === 0) {
+    const editor = getEditorState();
     container.innerHTML = `
       <div class="chat-welcome">
-        <p>🌺 <strong>Hey Nora!</strong> Ask me anything about DaVinci Resolve. I've got your tips doc loaded, so I know what you already know.</p>
+        <p>🌺 <strong>Hey Nora!</strong> Ask me anything about ${editor.name}. I've got your ${editor.name} tips doc loaded, so I know what you already know.</p>
       </div>
     `;
     return;
@@ -473,10 +495,11 @@ async function acceptAddTip(tipId, sectionName, subsectionName, content) {
       let subsection = section.subsections?.find(sub => sub.title.toLowerCase() === subsectionName.toLowerCase());
       if (!subsection) {
         // Create subsection
+        const editor = getEditorState();
         const res = await fetch('/api/davinci/tips', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ parent_id: section.id, title: subsectionName, level: 1 })
+          body: JSON.stringify({ parent_id: section.id, title: subsectionName, level: 1, editorId: editor.id })
         });
         if (!res.ok) throw new Error('Failed to create subsection');
         const newSub = await res.json();
@@ -547,10 +570,11 @@ async function sendDavinciMessage() {
   sendBtn.textContent = '...';
   
   try {
+    const editor = getEditorState();
     const res = await fetch('/api/davinci/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message })
+      body: JSON.stringify({ message, editorId: editor.id })
     });
     
     if (!res.ok) throw new Error('Failed to send');
@@ -605,7 +629,8 @@ async function clearDavinciChat() {
   if (!confirm('Clear all chat history? This cannot be undone.')) return;
   
   try {
-    const res = await fetch('/api/davinci/chat/messages', { method: 'DELETE' });
+    const editor = getEditorState();
+    const res = await fetch(`/api/davinci/chat/messages?editorId=${encodeURIComponent(editor.id)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to clear');
     davinciChatMessages = [];
     renderDavinciChat();

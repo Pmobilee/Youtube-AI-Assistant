@@ -188,7 +188,7 @@ try {
   // best effort
 }
 
-// DaVinci assistant tables (safe create)
+// Editor assistant tables (legacy table names preserved for compatibility)
 db.exec(`
   CREATE TABLE IF NOT EXISTS davinci_tips (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,12 +214,59 @@ db.exec(`
     summary TEXT DEFAULT '',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS editor_chat_memory (
+    editor_id TEXT PRIMARY KEY,
+    summary TEXT DEFAULT '',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
+
+const editorSchemaMigrations = [
+  'ALTER TABLE davinci_tips ADD COLUMN editor_id TEXT DEFAULT "davinci-resolve"',
+  'ALTER TABLE davinci_chat_messages ADD COLUMN editor_id TEXT DEFAULT "davinci-resolve"',
+  'CREATE INDEX IF NOT EXISTS idx_davinci_tips_editor ON davinci_tips(editor_id)',
+  'CREATE INDEX IF NOT EXISTS idx_davinci_chat_editor ON davinci_chat_messages(editor_id)',
+];
+
+for (const migration of editorSchemaMigrations) {
+  try {
+    db.exec(migration);
+  } catch (e) {
+    // already exists
+  }
+}
+
+try {
+  db.exec("UPDATE davinci_tips SET editor_id = 'davinci-resolve' WHERE editor_id IS NULL OR editor_id = ''");
+  db.exec("UPDATE davinci_chat_messages SET editor_id = 'davinci-resolve' WHERE editor_id IS NULL OR editor_id = ''");
+} catch (e) {
+  console.warn('editor_id backfill warning:', e.message);
+}
 
 try {
   db.prepare('INSERT OR IGNORE INTO davinci_chat_memory (id, summary) VALUES (1, ?)').run('');
 } catch (e) {
   console.warn('davinci_chat_memory init warning:', e.message);
+}
+
+function ensureEditorMemory(editorId) {
+  try {
+    db.prepare('INSERT OR IGNORE INTO editor_chat_memory (editor_id, summary) VALUES (?, ?)').run(editorId, '');
+  } catch (e) {
+    console.warn('editor_chat_memory ensure warning:', e.message);
+  }
+}
+
+try {
+  ensureEditorMemory('davinci-resolve');
+  const legacy = db.prepare('SELECT summary FROM davinci_chat_memory WHERE id = 1').get();
+  if (legacy?.summary) {
+    db.prepare('UPDATE editor_chat_memory SET summary = COALESCE(NULLIF(summary, ""), ?) WHERE editor_id = ?')
+      .run(legacy.summary, 'davinci-resolve');
+  }
+} catch (e) {
+  console.warn('editor_chat_memory init warning:', e.message);
 }
 
 // Seed default long-term findings (shared, always-injected guidance)
@@ -290,6 +337,93 @@ if (!fs.existsSync(globalMemoryPath)) {
 // --- Model clients, runtime settings, and secure local env updates ---
 const runtimeSettingsPath = path.join(dataDir, 'runtime_settings.json');
 const envFilePath = path.join(__dirname, '.env');
+const editorContextCachePath = path.join(dataDir, 'editor_context_cache.json');
+
+const editorCatalog = [
+  {
+    id: 'davinci-resolve',
+    name: 'DaVinci Resolve',
+    shortName: 'DaVinci',
+    tipsTitle: 'DaVinci Resolve Tips & Tricks',
+    chatTitle: 'DaVinci Chat',
+    docs: [
+      { title: 'DaVinci Resolve Documentation', url: 'https://www.blackmagicdesign.com/products/davinciresolve/training' },
+      { title: 'DaVinci Resolve 20 New Features', url: 'https://www.blackmagicdesign.com/products/davinciresolve/whatsnew' },
+    ],
+    fallbackContext: [
+      'Core pages: Cut, Edit, Fusion, Color, Fairlight, Deliver.',
+      'Most workflow wins come from timeline organization, proxies/optimized media, and keyboard shortcuts.',
+      'Use scoped color workflow with node-based grading and maintain legal levels for delivery.',
+    ],
+  },
+  {
+    id: 'premiere-pro',
+    name: 'Adobe Premiere Pro',
+    shortName: 'Premiere',
+    tipsTitle: 'Premiere Pro Tips & Tricks',
+    chatTitle: 'Premiere Pro Chat',
+    docs: [
+      { title: 'Premiere Pro User Guide', url: 'https://helpx.adobe.com/premiere-pro/user-guide.html' },
+      { title: 'Premiere Pro Tutorials', url: 'https://helpx.adobe.com/premiere-pro/tutorials.html' },
+    ],
+    fallbackContext: [
+      'Core workflow: Project panel, Source Monitor, Program Monitor, Timeline, Effects Controls.',
+      'Use proxies, sequence presets, and adjustment layers for repeatable grading/effects.',
+      'Master multicam, nested sequences, and audio essential sound panel for speed.',
+    ],
+  },
+  {
+    id: 'final-cut-pro',
+    name: 'Final Cut Pro',
+    shortName: 'Final Cut',
+    tipsTitle: 'Final Cut Pro Tips & Tricks',
+    chatTitle: 'Final Cut Pro Chat',
+    docs: [
+      { title: 'Final Cut Pro User Guide', url: 'https://support.apple.com/guide/final-cut-pro/welcome/mac' },
+      { title: 'Final Cut Pro Resources', url: 'https://www.apple.com/final-cut-pro/resources/' },
+    ],
+    fallbackContext: [
+      'Magnetic timeline, libraries/events/projects structure, and roles-based audio are core concepts.',
+      'Use keywords and smart collections for fast media retrieval.',
+      'Leverage compound clips and adjustment layers for reusable edits.',
+    ],
+  },
+  {
+    id: 'after-effects',
+    name: 'After Effects',
+    shortName: 'After Effects',
+    tipsTitle: 'After Effects Tips & Tricks',
+    chatTitle: 'After Effects Chat',
+    docs: [
+      { title: 'After Effects User Guide', url: 'https://helpx.adobe.com/after-effects/user-guide.html' },
+      { title: 'After Effects Tutorials', url: 'https://helpx.adobe.com/after-effects/tutorials.html' },
+    ],
+    fallbackContext: [
+      'Composition hierarchy, precomps, and timing/keyframes are foundational.',
+      'Use graph editor, easy ease, and motion blur for polished animation.',
+      'Optimize renders with proxies/pre-renders and organized project panels.',
+    ],
+  },
+  {
+    id: 'capcut',
+    name: 'CapCut',
+    shortName: 'CapCut',
+    tipsTitle: 'CapCut Tips & Tricks',
+    chatTitle: 'CapCut Chat',
+    docs: [
+      { title: 'CapCut Help Center', url: 'https://www.capcut.com/resource' },
+      { title: 'CapCut Editing Guides', url: 'https://www.capcut.com/tools' },
+    ],
+    fallbackContext: [
+      'Prioritize quick template flows, auto captions, and fast social exports.',
+      'Use effect stacks conservatively to preserve clarity on mobile viewers.',
+      'Keep hook pacing tight in the first 2–3 seconds for short-form platforms.',
+    ],
+  },
+];
+
+const editorById = Object.fromEntries(editorCatalog.map(editor => [editor.id, editor]));
+const defaultEditorId = editorCatalog[0].id;
 
 const textProviderCatalog = [
   { id: 'anthropic', label: 'Claude (Anthropic)', envKey: 'ANTHROPIC_API_KEY' },
@@ -424,6 +558,204 @@ function maskSecret(value) {
 }
 
 const runtimeSettings = loadRuntimeSettings();
+
+let selectedEditorId = runtimeSettings.selectedEditorId || process.env.NORA_WRITER_EDITOR || defaultEditorId;
+if (!editorById[selectedEditorId]) {
+  selectedEditorId = defaultEditorId;
+}
+
+function getEditorById(editorId) {
+  const normalized = String(editorId || '').trim();
+  return editorById[normalized] || editorById[defaultEditorId];
+}
+
+function getSelectedEditor() {
+  return getEditorById(selectedEditorId);
+}
+
+function listEditors() {
+  return editorCatalog.map(editor => ({
+    id: editor.id,
+    name: editor.name,
+    shortName: editor.shortName,
+    chatTitle: editor.chatTitle,
+    tipsTitle: editor.tipsTitle,
+    docsCount: editor.docs.length,
+  }));
+}
+
+function normalizeEditorId(editorId) {
+  const editor = getEditorById(editorId);
+  return editor.id;
+}
+
+function loadEditorContextCache() {
+  try {
+    if (fs.existsSync(editorContextCachePath)) {
+      const parsed = JSON.parse(fs.readFileSync(editorContextCachePath, 'utf-8'));
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch (err) {
+    console.warn('Could not load editor context cache:', err.message);
+  }
+  return {};
+}
+
+function saveEditorContextCache(cache) {
+  try {
+    fs.writeFileSync(editorContextCachePath, JSON.stringify(cache || {}, null, 2));
+  } catch (err) {
+    console.warn('Could not save editor context cache:', err.message);
+  }
+}
+
+function stripHtmlToText(input) {
+  const html = String(input || '');
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function chunkText(text, maxLen = 1200, overlap = 180) {
+  const src = String(text || '').trim();
+  if (!src) return [];
+
+  const chunks = [];
+  let idx = 0;
+  while (idx < src.length) {
+    const end = Math.min(src.length, idx + maxLen);
+    const slice = src.slice(idx, end).trim();
+    if (slice) chunks.push(slice);
+    if (end >= src.length) break;
+    idx = Math.max(0, end - overlap);
+  }
+  return chunks;
+}
+
+function tokenize(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s\-]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter(token => token.length > 2);
+}
+
+function scoreChunk(chunk, terms) {
+  const hay = String(chunk || '').toLowerCase();
+  let score = 0;
+  for (const term of terms) {
+    if (!term) continue;
+    const hits = hay.split(term).length - 1;
+    if (hits > 0) score += hits * Math.min(term.length, 10);
+  }
+  return score;
+}
+
+let editorContextCache = loadEditorContextCache();
+
+function getEditorContextMeta(editorId) {
+  const normalized = normalizeEditorId(editorId);
+  const row = editorContextCache[normalized] || {};
+  return {
+    editorId: normalized,
+    fetchedAt: row.fetchedAt || null,
+    chunks: Array.isArray(row.chunks) ? row.chunks.length : 0,
+    sourceCount: Array.isArray(row.sources) ? row.sources.length : 0,
+    fallbackUsed: Boolean(row.fallbackUsed),
+  };
+}
+
+async function refreshEditorContext(editorId, { force = false } = {}) {
+  const editor = getEditorById(editorId);
+  const normalized = editor.id;
+  const now = Date.now();
+  const ttlMs = 7 * 24 * 60 * 60 * 1000;
+  const existing = editorContextCache[normalized];
+
+  if (!force && existing?.fetchedAt && (now - existing.fetchedAt) < ttlMs && Array.isArray(existing.chunks) && existing.chunks.length > 0) {
+    return getEditorContextMeta(normalized);
+  }
+
+  const sources = [];
+  const chunks = [];
+
+  for (const source of editor.docs) {
+    try {
+      const response = await fetch(source.url, {
+        headers: {
+          'User-Agent': 'YAA-Docs-Fetcher/1.0 (+https://github.com/Pmobilee/Youtube-AI-Assistant)',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
+
+      if (!response.ok) {
+        sources.push({ title: source.title, url: source.url, ok: false, status: response.status, chars: 0 });
+        continue;
+      }
+
+      const text = stripHtmlToText(await response.text());
+      const textChunks = chunkText(text, 1200, 180)
+        .slice(0, 40)
+        .map(chunk => ({ source: source.url, text: chunk }));
+
+      if (textChunks.length > 0) {
+        chunks.push(...textChunks);
+      }
+
+      sources.push({ title: source.title, url: source.url, ok: true, status: response.status, chars: text.length });
+    } catch (err) {
+      sources.push({ title: source.title, url: source.url, ok: false, status: 0, chars: 0, error: err.message });
+    }
+  }
+
+  let fallbackUsed = false;
+  if (chunks.length === 0) {
+    fallbackUsed = true;
+    editor.fallbackContext.forEach((line, idx) => {
+      chunks.push({ source: `fallback:${idx + 1}`, text: line });
+    });
+  }
+
+  editorContextCache[normalized] = {
+    fetchedAt: now,
+    fallbackUsed,
+    sources,
+    chunks,
+  };
+  saveEditorContextCache(editorContextCache);
+  return getEditorContextMeta(normalized);
+}
+
+function selectEditorContext(editorId, query, limit = 6) {
+  const normalized = normalizeEditorId(editorId);
+  const row = editorContextCache[normalized];
+  const chunks = Array.isArray(row?.chunks) ? row.chunks : [];
+  if (!chunks.length) return '';
+
+  const terms = uniqStrings(tokenize(query)).slice(0, 16);
+  const ranked = chunks
+    .map(chunk => ({
+      chunk,
+      score: terms.length ? scoreChunk(chunk.text, terms) : 1,
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .filter(item => item.score > 0 || terms.length === 0);
+
+  const selected = ranked.length ? ranked : chunks.slice(0, limit).map(chunk => ({ chunk, score: 1 }));
+
+  return selected
+    .map((item, idx) => `- [${idx + 1}] (${item.chunk.source}) ${item.chunk.text}`)
+    .join('\n');
+}
 
 let selectedTextProvider = runtimeSettings.selectedTextProvider || process.env.NORA_WRITER_TEXT_PROVIDER || 'anthropic';
 if (!textProviderIds.includes(selectedTextProvider)) {
@@ -1424,9 +1756,10 @@ function getVideoTokenCount(videoId) {
   return total;
 }
 
-function getDavinciTokenCount() {
-  const messages = db.prepare('SELECT content FROM davinci_chat_messages ORDER BY created_at ASC').all();
-  const memory = db.prepare('SELECT summary FROM davinci_chat_memory WHERE id = 1').get();
+function getDavinciTokenCount(editorId = selectedEditorId) {
+  const normalized = normalizeEditorId(editorId);
+  const messages = db.prepare('SELECT content FROM davinci_chat_messages WHERE editor_id = ? ORDER BY created_at ASC').all(normalized);
+  const memory = db.prepare('SELECT summary FROM editor_chat_memory WHERE editor_id = ?').get(normalized);
   let total = 0;
   messages.forEach(m => total += estimateTokens(m.content));
   if (memory?.summary) total += estimateTokens(memory.summary);
@@ -1491,33 +1824,35 @@ async function compactVideoContext(videoId, channelType = null, keepRecent = 12)
   return { prunedCount, newTokens, memoryUpdated };
 }
 
-async function compactDavinciContext(keepRecent = 20) {
+async function compactDavinciContext(keepRecent = 20, editorId = selectedEditorId) {
+  const normalized = normalizeEditorId(editorId);
   const keep = Math.max(8, Number(keepRecent) || 20);
-  const rows = db.prepare('SELECT id, role, content FROM davinci_chat_messages ORDER BY created_at ASC').all();
+  const rows = db.prepare('SELECT id, role, content FROM davinci_chat_messages WHERE editor_id = ? ORDER BY created_at ASC').all(normalized);
   if (rows.length <= keep) {
-    return { prunedCount: 0, newTokens: getDavinciTokenCount(), memoryUpdated: false };
+    return { prunedCount: 0, newTokens: getDavinciTokenCount(normalized), memoryUpdated: false };
   }
 
   const older = rows.slice(0, rows.length - keep);
   const ids = older.map(r => r.id);
   const placeholders = ids.map(() => '?').join(',');
+  const editor = getEditorById(normalized);
 
   const compactSummary = await summarizeWithModel({
-    systemPrompt: 'Summarize this DaVinci support chat into concise reusable guidance. Keep exact workflows, button paths, caveats, and troubleshooting steps.',
+    systemPrompt: `Summarize this ${editor.name} support chat into concise reusable guidance. Keep exact workflows, button paths, caveats, and troubleshooting steps.`,
     userPrompt: older.map(r => `${r.role}: ${r.content}`).join('\n')
   });
 
   db.prepare(`DELETE FROM davinci_chat_messages WHERE id IN (${placeholders})`).run(...ids);
 
-  const existing = db.prepare('SELECT summary FROM davinci_chat_memory WHERE id = 1').get();
+  const existing = db.prepare('SELECT summary FROM editor_chat_memory WHERE editor_id = ?').get(normalized);
   const merged = [existing?.summary || '', `[Manual compact ${new Date().toISOString()}]\n${compactSummary}`]
     .filter(Boolean)
     .join('\n\n');
 
-  db.prepare('INSERT INTO davinci_chat_memory (id, summary, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET summary = excluded.summary, updated_at = CURRENT_TIMESTAMP')
-    .run(merged);
+  db.prepare('INSERT INTO editor_chat_memory (editor_id, summary, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(editor_id) DO UPDATE SET summary = excluded.summary, updated_at = CURRENT_TIMESTAMP')
+    .run(normalized, merged);
 
-  return { prunedCount: older.length, newTokens: getDavinciTokenCount(), memoryUpdated: true };
+  return { prunedCount: older.length, newTokens: getDavinciTokenCount(normalized), memoryUpdated: true };
 }
 
 // ============ API ROUTES ============
@@ -1528,6 +1863,8 @@ async function buildModelState({ force = false } = {}) {
     force,
     activateProvider: true,
   });
+
+  const editor = getSelectedEditor();
 
   return {
     textProvider: ensured.provider,
@@ -1540,6 +1877,11 @@ async function buildModelState({ force = false } = {}) {
     imageGenerationModel,
     imageAnalysisProviders: imageAnalysisProviderOptions,
     selectedImageAnalysisProvider,
+    selectedEditorId: editor.id,
+    selectedEditorName: editor.name,
+    selectedEditorShortName: editor.shortName,
+    editors: listEditors(),
+    editorContext: getEditorContextMeta(editor.id),
   };
 }
 
@@ -1618,8 +1960,58 @@ app.post('/api/models/image-analysis/select', (req, res) => {
   });
 });
 
+app.get('/api/editors', async (req, res) => {
+  const editor = getSelectedEditor();
+  await refreshEditorContext(editor.id, { force: false });
+
+  res.json({
+    success: true,
+    selectedEditorId: editor.id,
+    selectedEditorName: editor.name,
+    selectedEditorShortName: editor.shortName,
+    editors: listEditors(),
+    editorContext: getEditorContextMeta(editor.id),
+  });
+});
+
+app.post('/api/editors/select', async (req, res) => {
+  const requested = normalizeEditorId(req.body?.editorId);
+  selectedEditorId = requested;
+  runtimeSettings.selectedEditorId = selectedEditorId;
+  saveRuntimeSettings(runtimeSettings);
+  ensureEditorMemory(selectedEditorId);
+
+  await refreshEditorContext(selectedEditorId, { force: false });
+
+  const editor = getSelectedEditor();
+  res.json({
+    success: true,
+    selectedEditorId: editor.id,
+    selectedEditorName: editor.name,
+    selectedEditorShortName: editor.shortName,
+    editors: listEditors(),
+    editorContext: getEditorContextMeta(editor.id),
+  });
+});
+
+app.post('/api/editors/context/refresh', async (req, res) => {
+  const requested = normalizeEditorId(req.body?.editorId || selectedEditorId);
+  const meta = await refreshEditorContext(requested, { force: true });
+  const editor = getEditorById(requested);
+
+  res.json({
+    success: true,
+    selectedEditorId: editor.id,
+    selectedEditorName: editor.name,
+    selectedEditorShortName: editor.shortName,
+    editorContext: meta,
+  });
+});
+
 app.get('/api/settings', async (req, res) => {
   const state = await buildModelState();
+  await refreshEditorContext(state.selectedEditorId, { force: false });
+
   res.json({
     success: true,
     envFileExists: fs.existsSync(envFilePath),
@@ -1629,6 +2021,11 @@ app.get('/api/settings', async (req, res) => {
     availableModels: state.models,
     selectedImageAnalysisProvider,
     imageAnalysisProviders: imageAnalysisProviderOptions,
+    selectedEditorId: state.selectedEditorId,
+    selectedEditorName: state.selectedEditorName,
+    selectedEditorShortName: state.selectedEditorShortName,
+    editors: state.editors,
+    editorContext: getEditorContextMeta(state.selectedEditorId),
   });
 });
 
@@ -1653,6 +2050,11 @@ app.post('/api/settings', async (req, res) => {
       refreshApiClients();
       clearModelCache();
     }
+
+    const requestedEditorId = normalizeEditorId(body.selectedEditorId || selectedEditorId);
+    selectedEditorId = requestedEditorId;
+    ensureEditorMemory(selectedEditorId);
+    await refreshEditorContext(selectedEditorId, { force: false });
 
     const requestedProvider = textProviderIds.includes(body.selectedTextProvider)
       ? body.selectedTextProvider
@@ -1694,6 +2096,7 @@ app.post('/api/settings', async (req, res) => {
       selectedImageAnalysisProvider = body.selectedImageAnalysisProvider;
     }
 
+    runtimeSettings.selectedEditorId = selectedEditorId;
     runtimeSettings.selectedTextProvider = selectedTextProvider;
     runtimeSettings.selectedTextModel = selectedTextModel;
     runtimeSettings.selectedProviderModels = selectedProviderModels;
@@ -2663,84 +3066,125 @@ app.delete('/api/videos/:videoId/references/:refId', (req, res) => {
   res.json({ success: true });
 });
 
-// ============ DAVINCI RESOLVE TIPS & CHAT ============
+// ============ EDITOR TIPS & CHAT (legacy /api/davinci/* routes retained) ============
+
+function resolveEditorIdFromReq(req) {
+  return normalizeEditorId(req.body?.editorId || req.query?.editorId || selectedEditorId);
+}
+
+function buildTipsHierarchy(rows = []) {
+  const byId = {};
+  rows.forEach(row => {
+    byId[row.id] = { ...row, subsections: [] };
+  });
+
+  const topLevel = [];
+  rows.forEach(row => {
+    const node = byId[row.id];
+    if (row.parent_id === null) {
+      topLevel.push(node);
+      return;
+    }
+
+    if (byId[row.parent_id]) {
+      byId[row.parent_id].subsections.push(node);
+      return;
+    }
+
+    topLevel.push(node);
+  });
+
+  return topLevel;
+}
+
+function buildTipsContext(tipsTree, editor) {
+  let out = `# ${editor.tipsTitle} (Nora's existing knowledge)\n\n`;
+
+  tipsTree.forEach(section => {
+    out += `## ${section.title}\n`;
+    if (section.content) out += `${section.content}\n\n`;
+
+    (section.subsections || []).forEach(sub => {
+      out += `### ${sub.title}\n`;
+      out += `${sub.content || ''}\n\n`;
+
+      (sub.subsections || []).forEach(child => {
+        out += `#### ${child.title}\n`;
+        out += `${child.content || ''}\n\n`;
+      });
+    });
+  });
+
+  return out;
+}
 
 // --- Tips CRUD ---
 app.get('/api/davinci/tips', (req, res) => {
   const { search } = req.query;
+  const editorId = resolveEditorIdFromReq(req);
+
   let tips;
-  
   if (search) {
     tips = db.prepare(`
-      SELECT * FROM davinci_tips 
-      WHERE title LIKE ? OR content LIKE ?
+      SELECT * FROM davinci_tips
+      WHERE editor_id = ? AND (title LIKE ? OR content LIKE ?)
       ORDER BY level ASC, position ASC
-    `).all(`%${search}%`, `%${search}%`);
+    `).all(editorId, `%${search}%`, `%${search}%`);
   } else {
     tips = db.prepare(`
-      SELECT * FROM davinci_tips 
+      SELECT * FROM davinci_tips
+      WHERE editor_id = ?
       ORDER BY level ASC, position ASC
-    `).all();
+    `).all(editorId);
   }
-  
-  // Build hierarchy (3 levels: H1 > H2 > H3)
-  const byId = {};
-  tips.forEach(t => { byId[t.id] = { ...t, subsections: [] }; });
-  
-  const topLevel = [];
-  tips.forEach(t => {
-    const node = byId[t.id];
-    if (t.parent_id === null) {
-      topLevel.push(node);
-    } else if (byId[t.parent_id]) {
-      byId[t.parent_id].subsections.push(node);
-    } else {
-      topLevel.push(node); // orphan fallback
-    }
-  });
-  
-  res.json(topLevel);
+
+  res.json(buildTipsHierarchy(tips));
 });
 
 app.get('/api/davinci/tips/:id', (req, res) => {
   const tip = db.prepare('SELECT * FROM davinci_tips WHERE id = ?').get(req.params.id);
   if (!tip) return res.status(404).json({ error: 'Not found' });
-  
+
   if (tip.level === 0) {
     tip.subsections = db.prepare('SELECT * FROM davinci_tips WHERE parent_id = ? ORDER BY position ASC').all(tip.id);
   }
-  
+
   res.json(tip);
 });
 
 app.post('/api/davinci/tips', (req, res) => {
-  const { parent_id, title, content, level } = req.body;
+  const { parent_id, title, content, level } = req.body || {};
   if (!title) return res.status(400).json({ error: 'Title required' });
-  
-  // Get next position
-  const maxPos = db.prepare('SELECT MAX(position) as max FROM davinci_tips WHERE parent_id IS ?').get(parent_id || null);
+
+  let editorId = resolveEditorIdFromReq(req);
+  if (parent_id) {
+    const parent = db.prepare('SELECT editor_id FROM davinci_tips WHERE id = ?').get(parent_id);
+    if (parent?.editor_id) editorId = normalizeEditorId(parent.editor_id);
+  }
+
+  const maxPos = db.prepare('SELECT MAX(position) as max FROM davinci_tips WHERE editor_id = ? AND parent_id IS ?').get(editorId, parent_id || null);
   const position = (maxPos?.max || -1) + 1;
-  
+
   const result = db.prepare(`
-    INSERT INTO davinci_tips (parent_id, title, content, level, position)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(parent_id || null, title, content || '', level || 0, position);
-  
+    INSERT INTO davinci_tips (editor_id, parent_id, title, content, level, position)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(editorId, parent_id || null, title, content || '', level || 0, position);
+
   const tip = db.prepare('SELECT * FROM davinci_tips WHERE id = ?').get(result.lastInsertRowid);
   res.json(tip);
 });
 
 app.put('/api/davinci/tips/:id', (req, res) => {
-  const { title, content } = req.body;
-  
+  const { title, content } = req.body || {};
+
   db.prepare(`
-    UPDATE davinci_tips 
+    UPDATE davinci_tips
     SET title = COALESCE(?, title),
         content = COALESCE(?, content),
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(title, content, req.params.id);
-  
+
   const tip = db.prepare('SELECT * FROM davinci_tips WHERE id = ?').get(req.params.id);
   res.json(tip);
 });
@@ -2750,19 +3194,22 @@ app.delete('/api/davinci/tips/:id', (req, res) => {
   res.json({ success: true });
 });
 
-// --- DaVinci Chat ---
+// --- Editor Chat ---
 app.get('/api/davinci/chat/messages', (req, res) => {
-  const messages = db.prepare('SELECT * FROM davinci_chat_messages ORDER BY created_at ASC').all();
+  const editorId = resolveEditorIdFromReq(req);
+  const messages = db.prepare('SELECT * FROM davinci_chat_messages WHERE editor_id = ? ORDER BY created_at ASC').all(editorId);
   res.json(messages);
 });
 
 app.delete('/api/davinci/chat/messages', (req, res) => {
-  db.prepare('DELETE FROM davinci_chat_messages').run();
+  const editorId = resolveEditorIdFromReq(req);
+  db.prepare('DELETE FROM davinci_chat_messages WHERE editor_id = ?').run(editorId);
   res.json({ success: true });
 });
 
 app.get('/api/davinci/chat/tokens', (req, res) => {
-  const count = getDavinciTokenCount();
+  const editorId = resolveEditorIdFromReq(req);
+  const count = getDavinciTokenCount(editorId);
   const max = 180000;
   res.json({
     tokens: count,
@@ -2775,64 +3222,52 @@ app.get('/api/davinci/chat/tokens', (req, res) => {
 
 app.post('/api/davinci/chat/compact', async (req, res) => {
   try {
+    const editorId = resolveEditorIdFromReq(req);
     const { keepRecent = 20 } = req.body || {};
-    const result = await compactDavinciContext(keepRecent);
-    res.json({ success: true, ...result });
+    const result = await compactDavinciContext(keepRecent, editorId);
+    res.json({ success: true, ...result, editorId });
   } catch (err) {
-    console.error('DaVinci compact failed:', err);
+    console.error('Editor chat compact failed:', err);
     res.status(500).json({ error: err.message || 'Compaction failed' });
   }
 });
 
 app.post('/api/davinci/chat', async (req, res) => {
-  const { message } = req.body;
+  const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'Message required' });
-  
-  // Save user message
-  db.prepare('INSERT INTO davinci_chat_messages (role, content) VALUES (?, ?)').run('user', message);
-  
-  // Get conversation history
-  const messages = db.prepare('SELECT role, content FROM davinci_chat_messages ORDER BY created_at ASC').all();
-  
-  // Load all tips as context
-  const tips = db.prepare('SELECT * FROM davinci_tips ORDER BY level ASC, position ASC').all();
-  const topLevel = tips.filter(t => t.parent_id === null);
-  topLevel.forEach(section => {
-    section.subsections = tips.filter(t => t.parent_id === section.id);
-  });
-  
-  // Build tips context string
-  let tipsContext = '# DaVinci Resolve Tips & Tricks (Nora\'s existing knowledge)\n\n';
-  topLevel.forEach(section => {
-    tipsContext += `## ${section.title}\n`;
-    if (section.content) {
-      tipsContext += `${section.content}\n\n`;
-    }
-    section.subsections.forEach(sub => {
-      tipsContext += `### ${sub.title}\n`;
-      tipsContext += `${sub.content}\n\n`;
-    });
-  });
-  
-  // Load Kona's personality
-  const kona = loadKonaContext();
-  
+
+  const editorId = resolveEditorIdFromReq(req);
+  const editor = getEditorById(editorId);
+
+  db.prepare('INSERT INTO davinci_chat_messages (editor_id, role, content) VALUES (?, ?, ?)').run(editorId, 'user', message);
+
+  const messages = db.prepare('SELECT role, content FROM davinci_chat_messages WHERE editor_id = ? ORDER BY created_at ASC').all(editorId);
+
+  const tipsRows = db.prepare('SELECT * FROM davinci_tips WHERE editor_id = ? ORDER BY level ASC, position ASC').all(editorId);
+  const tipsTree = buildTipsHierarchy(tipsRows);
+  const tipsContext = buildTipsContext(tipsTree, editor);
+
+  await refreshEditorContext(editorId, { force: false });
+  const docsContext = selectEditorContext(editorId, message, 6);
+
   const findingsBlock = getLongTermFindingsPromptBlock();
 
-  // Build system prompt
   const systemPrompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
 You ARE Kona 🌺 — Damion and Nora's AI partner. You have your own personality and voice.
 
 ## Your Role
-You're helping Nora learn DaVinci Resolve Studio 20. She's building her video editing skills and keeping a tips document.
+You're helping Nora master ${editor.name}. Keep answers practical, step-by-step, and creator-focused.
 
 ## Communication Style
-- Dense and direct. Skip the pleasantries.
+- Dense and direct. Skip fluff.
 - SHORT responses only (max 5 sentences strict)
 - When referencing existing tips, use this format: "check **[Section > Subsection]**"
-- Push ideas further, don't just answer questions
-- Be genuinely helpful and opinionated
+- Push ideas further; don't stop at basic answers
+- Be opinionated and useful
+
+## Editor Documentation Context (retrieved from docs)
+${docsContext || '- No docs context available yet. Use known workflow best practices and ask for specifics when unsure.'}
 
 ## The Tips Document
 Nora already has these tips documented. Reference them when relevant:
@@ -2843,9 +3278,9 @@ ${tipsContext}
 ${findingsBlock || '(none)'}
 
 ## When Nora Says "Add This to the Doc"
-1. Detect which section the tip belongs to (based on topic: color, audio, shortcuts, etc.)
-2. If uncertain which section, ask: "Should this go in [Section A] or [Section B]?"
-3. Format your response with an XML-style add block:
+1. Detect the best section/subsection for this tip.
+2. If unsure, ask one sharp routing question.
+3. Format your response with this XML block:
 
 <<<ADD_TIP section="Section Name" subsection="Subsection Name (optional)">>>
 The new tip content here.
@@ -2856,13 +3291,11 @@ Use concise, action-oriented language.
 Multiple ADD_TIP blocks are allowed in one message.
 
 ## Important
-- Always check if Nora already knows this (search the tips above)
-- If she does, point her to the specific section instead of repeating
-- When adding tips, add WHERE to find buttons/menus (screen location context)
-- Keep the same concise, actionable writing style as existing tips`;
+- Avoid repeating what she already knows in tips.
+- Point to exact section names when reusing existing guidance.
+- Always include button/menu path context when giving new workflow steps.`;
 
   try {
-    // Stream response
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -2876,7 +3309,7 @@ Multiple ADD_TIP blocks are allowed in one message.
         content: m.content
       }));
 
-    let fullResponse = await generateResponse({
+    const fullResponse = await generateResponse({
       systemPrompt,
       apiMessages,
       onText: (text) => {
@@ -2884,14 +3317,12 @@ Multiple ADD_TIP blocks are allowed in one message.
       }
     });
 
-    // Save assistant message
-    db.prepare('INSERT INTO davinci_chat_messages (role, content) VALUES (?, ?)').run('assistant', fullResponse);
+    db.prepare('INSERT INTO davinci_chat_messages (editor_id, role, content) VALUES (?, ?, ?)').run(editorId, 'assistant', fullResponse);
 
     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
     res.end();
-
   } catch (err) {
-    console.error('DaVinci chat error:', err);
+    console.error('Editor chat error:', err);
     if (!res.headersSent) {
       res.status(500).json({ error: err.message });
     } else {
@@ -2920,6 +3351,8 @@ function getLongTermFindingsPromptBlock() {
 
 function buildSystemPrompt(video, memory, globalMemory) {
   const kona = loadKonaContext();
+  const activeEditor = getSelectedEditor();
+  const editorContext = selectEditorContext(activeEditor.id, `${video.title} ${video.script_content || ''}`, 3);
 
   let prompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
@@ -2942,6 +3375,10 @@ You're Nora's creative partner for video production. This is YOUR workspace with
 - Help with descriptions, voiceover text, and thumbnail concepts
 - Be genuinely creative and push ideas further
 - When you reference a specific part of the script, wrap it in [[section:Section Name]] tags so the UI highlights it
+
+## Current Editing Stack
+- Active editor app: ${activeEditor.name}
+${editorContext ? `- Context from docs:\n${editorContext}` : '- No docs context loaded yet; use general best-practice guidance.'}
 
 ## Communication Style
 Same as always — direct, warm, a little sarcastic, never fake. You know Nora. You care about making her videos great. Skip the pleasantries and dig into the work.

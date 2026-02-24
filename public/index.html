@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>YouTube AI Assistant</title>
+  <title>YAA</title>
   <link rel="stylesheet" href="/css/style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -21,12 +21,16 @@
     <!-- Top Navigation (3 sections) -->
     <nav class="top-nav">
       <div class="nav-logo">
-        <h1>🎬 YouTube AI Assistant</h1>
+        <img src="/assets/yaa-logo.png" alt="YAA logo" class="nav-logo-image" />
+        <div class="nav-logo-copy">
+          <h1 id="app-brand-title">YAA</h1>
+          <p id="app-brand-subtitle">YouTube AI Assistant</p>
+        </div>
       </div>
       <div class="nav-tabs">
         <button class="nav-tab active" data-section="projects" onclick="switchSection('projects')">📹 Projects</button>
-        <button class="nav-tab" data-section="davinci-chat" onclick="switchSection('davinci-chat')">💬 DaVinci Chat</button>
-        <button class="nav-tab" data-section="tips" onclick="switchSection('tips')">📚 Tips & Tricks</button>
+        <button id="nav-editor-chat-tab" class="nav-tab" data-section="davinci-chat" onclick="switchSection('davinci-chat')">💬 DaVinci Chat</button>
+        <button id="nav-editor-tips-tab" class="nav-tab" data-section="tips" onclick="switchSection('tips')">📚 DaVinci Tips & Tricks</button>
         <button class="nav-tab" data-section="findings" onclick="switchSection('findings')">🧠 Long-Term Findings</button>
         <button class="nav-tab" data-section="settings" onclick="switchSection('settings')">⚙️ Settings</button>
       </div>
@@ -39,7 +43,7 @@
     <div id="library-view" class="view section-view active" data-section="projects">
       <header class="library-header">
         <div class="header-left">
-          <p class="subtitle">Video Script Workspace</p>
+          <p class="subtitle">YAA Studio</p>
         </div>
         <div class="header-right">
           <button id="new-video-btn" class="btn btn-primary">+ New Video</button>
@@ -283,26 +287,26 @@
       </div>
     </div>
 
-    <!-- DaVinci Chat View -->
+    <!-- Editor Chat View -->
     <div id="davinci-chat-view" class="view section-view" data-section="davinci-chat">
       <div class="davinci-chat-container">
         <div class="davinci-header">
           <div>
-            <h2>💬 DaVinci Chat</h2>
-            <p class="subtitle">Ask Kona about DaVinci Resolve Studio 20</p>
+            <h2 id="editor-chat-title">💬 DaVinci Chat</h2>
+            <p id="editor-chat-subtitle" class="subtitle">Ask Kona about DaVinci Resolve</p>
           </div>
           <div class="davinci-actions">
             <div class="token-bar davinci-token-bar" id="davinci-token-bar">
               <div class="token-fill" id="davinci-token-fill"></div>
               <span class="token-text" id="davinci-token-text">0 / 180K tokens</span>
             </div>
-            <button class="btn btn-ghost btn-sm" id="davinci-compact-btn" title="Compact older DaVinci chat context">🧹 Compact</button>
+            <button class="btn btn-ghost btn-sm" id="davinci-compact-btn" title="Compact older editor chat context">🧹 Compact</button>
             <button class="btn btn-ghost" onclick="clearDavinciChat()">🗑️ New Chat</button>
           </div>
         </div>
         <div class="davinci-chat-messages" id="davinci-chat-messages">
           <div class="chat-welcome">
-            <p>🌺 <strong>Hey Nora!</strong> Ask me anything about DaVinci Resolve. I've got your tips doc loaded, so I know what you already know.</p>
+            <p id="editor-chat-welcome">🌺 <strong>Hey Nora!</strong> Ask me anything about DaVinci Resolve. I’ve got your tips doc loaded, so I know what you already know.</p>
           </div>
         </div>
         <div class="davinci-chat-input">
@@ -344,9 +348,17 @@
 
         <div class="settings-grid">
           <section class="settings-card">
-            <h3>Text Provider</h3>
+            <h3>Workspace Engine</h3>
             <label class="settings-field">
-              <span>Provider</span>
+              <span>Editing app</span>
+              <select id="settings-editor-select" class="status-select"></select>
+            </label>
+            <div class="settings-inline-actions">
+              <button class="btn btn-ghost btn-sm" id="settings-refresh-editor-context-btn">📚 Refresh Editor Docs Context</button>
+            </div>
+            <div id="settings-editor-docs-status" class="settings-hint">Docs context: waiting…</div>
+            <label class="settings-field">
+              <span>Text provider</span>
               <select id="settings-text-provider-select" class="status-select"></select>
             </label>
             <label class="settings-field">
@@ -357,7 +369,7 @@
               <span>Image analysis provider</span>
               <select id="settings-image-analysis-select" class="status-select"></select>
             </label>
-            <div id="settings-model-hint" class="settings-hint">Pick provider + model, then Save Settings.</div>
+            <div id="settings-model-hint" class="settings-hint">Pick editor + provider + model, then Save Settings.</div>
           </section>
 
           <section class="settings-card">
@@ -401,9 +413,9 @@
     <div id="tips-view" class="view section-view" data-section="tips">
       <div class="tips-container">
         <div class="tips-header">
-          <h2>📚 DaVinci Resolve Tips & Tricks</h2>
+          <h2 id="editor-tips-title">📚 DaVinci Resolve Tips & Tricks</h2>
           <div class="tips-actions">
-            <input type="text" id="tips-search" placeholder="🔍 Search tips..." class="tips-search">
+            <input type="text" id="tips-search" placeholder="🔍 Search editor tips..." class="tips-search">
             <button class="btn btn-primary" onclick="addNewSection()">+ Add Section</button>
           </div>
         </div>

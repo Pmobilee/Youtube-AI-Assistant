@@ -9,6 +9,7 @@ data/*.db-shm
 data/*.db.bak*
 data/runtime_settings.json
 data/global_memory.json
+data/editor_context_cache.json
 
 # Environment / secrets
 .env
@@ -35,4 +36,12 @@ public.backup*/
 backups/
 .implementation-*/
 .data/
+.feature*
+.features/
+.feature-status/
+FEATURE_*.md
+GITHUB_SETUP.md
+.syncignore
+scripts/sync-*.sh
+scripts/push-github-with-vault.sh
 dist/
