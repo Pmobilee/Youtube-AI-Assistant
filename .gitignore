@@ -6,6 +6,7 @@ uploads/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.db.bak*
 data/runtime_settings.json
 data/global_memory.json
 

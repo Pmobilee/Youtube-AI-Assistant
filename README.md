@@ -55,23 +55,31 @@ Open: `http://localhost:3000`
 - Keys are written to local `.env` (ignored by git) and only masked hints are shown in UI.
 - Image generation stays on Nanobanana route.
 
-## Sync live instance to this GitHub mirror (publish-safe)
-If your live app is running from another folder (for example `/root/.openclaw/nora-writer`), use:
+## Live deploy model (canonical)
+The live service now runs directly from this repo path:
+
+- `/root/.openclaw/workspace/projects/youtube-ai-assistant`
+
+That means normal flow is just: edit → commit → push from this same folder.
 
 ```bash
-./scripts/sync-from-live.sh --source /root/.openclaw/nora-writer
+cd /root/.openclaw/workspace/projects/youtube-ai-assistant
+git add -A
+git commit -m "feat: ..."
+git push github main
+```
+
+## Legacy import helper (publish-safe)
+If you ever need a one-time import from another folder, use:
+
+```bash
+./scripts/sync-from-live.sh --source <legacy-path>
 ```
 
 This sync excludes secrets/runtime files using `.syncignore` (`.env`, DB files, uploads, backups, etc.) and is non-destructive by default (keeps repo-only automation files).
-To sync + push in one command:
 
-```bash
-./scripts/sync-live-and-push.sh /root/.openclaw/nora-writer
-```
-
-This tries normal git auth first (SSH key / app token), then falls back to Vault PAT helper if needed.
-
-Vault token helper (push only):
+## Push helper fallback
+If direct SSH/app auth fails, use Vault PAT fallback:
 
 ```bash
 ./scripts/push-github-with-vault.sh github main

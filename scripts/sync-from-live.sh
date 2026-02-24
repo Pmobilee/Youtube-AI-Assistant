@@ -3,18 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEFAULT_SOURCE="/root/.openclaw/nora-writer"
-SOURCE_DIR="$DEFAULT_SOURCE"
+SOURCE_DIR=""
 PUSH_AFTER_SYNC=0
 COMMIT_MSG="chore(sync): mirror safe live changes"
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/sync-from-live.sh [--source <path>] [--push] [--message "..."]
+  ./scripts/sync-from-live.sh --source <path> [--push] [--message "..."]
 
 Options:
-  --source <path>   Source/live project path (default: /root/.openclaw/nora-writer)
+  --source <path>   Source/live project path to import from (required)
   --push            Push commit to current branch after syncing
   --message "..."   Custom commit message
 
@@ -49,6 +48,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$SOURCE_DIR" ]]; then
+  echo "Missing required --source <path>." >&2
+  usage
+  exit 2
+fi
 
 if [[ ! -d "$SOURCE_DIR" ]]; then
   echo "Source directory not found: $SOURCE_DIR" >&2
