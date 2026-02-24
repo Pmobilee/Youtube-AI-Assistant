@@ -28,6 +28,8 @@ function switchSection(section) {
     loadTips();
   } else if (section === 'davinci-chat') {
     loadDavinciChat();
+  } else if (section === 'findings') {
+    if (typeof loadFindings === 'function') loadFindings();
   }
 }
 

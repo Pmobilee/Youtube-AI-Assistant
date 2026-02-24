@@ -27,6 +27,7 @@
         <button class="nav-tab active" data-section="projects" onclick="switchSection('projects')">📹 Projects</button>
         <button class="nav-tab" data-section="davinci-chat" onclick="switchSection('davinci-chat')">💬 DaVinci Chat</button>
         <button class="nav-tab" data-section="tips" onclick="switchSection('tips')">📚 Tips & Tricks</button>
+        <button class="nav-tab" data-section="findings" onclick="switchSection('findings')">🧠 Long-Term Findings</button>
       </div>
       <div class="nav-actions">
         <div class="top-status" title="Claude API status">
@@ -318,6 +319,21 @@
           <textarea id="davinci-input" placeholder="Ask about DaVinci Resolve..." rows="1"></textarea>
           <button id="davinci-send-btn" class="btn btn-primary btn-send">Send</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Long-Term Findings View -->
+    <div id="findings-view" class="view section-view" data-section="findings">
+      <div class="tips-container findings-container">
+        <div class="tips-header">
+          <h2>🧠 Long-Term Findings</h2>
+          <div class="tips-actions findings-actions">
+            <textarea id="finding-input" placeholder="Add a durable learning to apply across script/thumbnail/generation..." class="finding-input"></textarea>
+            <button class="btn btn-primary" id="add-finding-btn">+ Add Finding</button>
+          </div>
+        </div>
+        <div class="findings-note">These are always injected into script writing, thumbnail analysis, and thumbnail generation prompts.</div>
+        <div class="findings-list" id="findings-list"></div>
       </div>
     </div>
 

@@ -127,6 +127,15 @@ db.exec(`
     FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS long_term_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL UNIQUE,
+    source TEXT DEFAULT 'nora',
+    is_archived INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS reference_board (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     video_id INTEGER NOT NULL,
@@ -208,6 +217,16 @@ try {
   db.prepare('INSERT OR IGNORE INTO davinci_chat_memory (id, summary) VALUES (1, ?)').run('');
 } catch (e) {
   console.warn('davinci_chat_memory init warning:', e.message);
+}
+
+// Seed default long-term findings (shared, always-injected guidance)
+try {
+  db.prepare(`INSERT OR IGNORE INTO long_term_findings (content, source, is_archived, updated_at)
+    VALUES (?, 'nora', 0, CURRENT_TIMESTAMP)`).run(
+    'Less footage of me just talking in the beginning, quick shots to me are fine, but mostly footage that people want to see and why they clicked.'
+  );
+} catch (e) {
+  console.warn('long_term_findings seed warning:', e.message);
 }
 
 // Seed default templates if none exist
@@ -841,6 +860,7 @@ async function analyzeThumbnailVersion({ video, version, providerOverride = null
   const researchContext = loadThumbnailResearchContext();
   const versionLabel = getThumbnailVersionLabel(version);
 
+  const findingsBlock = getLongTermFindingsPromptBlock();
   const systemPrompt = `You are Nora's thumbnail analysis specialist.
 
 Evaluate the provided YouTube thumbnail and return practical, high-signal feedback.
@@ -853,7 +873,10 @@ Rules:
 - Return PLAIN TEXT only (no markdown tables, no code fences).
 
 Use this research library as your benchmark:
-${researchContext || '(No research document loaded.)'}`;
+${researchContext || '(No research document loaded.)'}
+
+Long-term creator findings (always apply):
+${findingsBlock || '(none)'}`;
 
   const userText = `Video title: ${video.title}
 Thumbnail version: ${versionLabel}
@@ -1122,6 +1145,50 @@ app.get('/api/credits', (req, res) => {
     display: 'Unavailable via standard Claude API key',
     source: 'anthropic-api-limit',
   });
+});
+
+// --- Long-term Findings ---
+app.get('/api/findings', (req, res) => {
+  const findings = db.prepare('SELECT * FROM long_term_findings WHERE is_archived = 0 ORDER BY updated_at DESC, created_at DESC').all();
+  res.json(findings);
+});
+
+app.post('/api/findings', (req, res) => {
+  const content = String(req.body?.content || '').trim();
+  const source = String(req.body?.source || 'nora').trim() || 'nora';
+  if (!content) return res.status(400).json({ error: 'content is required' });
+
+  try {
+    const result = db.prepare('INSERT INTO long_term_findings (content, source, is_archived, updated_at) VALUES (?, ?, 0, CURRENT_TIMESTAMP)')
+      .run(content, source);
+    const finding = db.prepare('SELECT * FROM long_term_findings WHERE id = ?').get(result.lastInsertRowid);
+    res.json({ success: true, finding });
+  } catch (err) {
+    if (String(err.message || '').includes('UNIQUE')) {
+      const existing = db.prepare('SELECT * FROM long_term_findings WHERE content = ?').get(content);
+      return res.json({ success: true, finding: existing, duplicate: true });
+    }
+    res.status(500).json({ error: err.message || 'Failed to add finding' });
+  }
+});
+
+app.put('/api/findings/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const content = String(req.body?.content || '').trim();
+  if (!content) return res.status(400).json({ error: 'content is required' });
+
+  const existing = db.prepare('SELECT * FROM long_term_findings WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'Finding not found' });
+
+  db.prepare('UPDATE long_term_findings SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(content, id);
+  const updated = db.prepare('SELECT * FROM long_term_findings WHERE id = ?').get(id);
+  res.json({ success: true, finding: updated });
+});
+
+app.delete('/api/findings/:id', (req, res) => {
+  const id = Number(req.params.id);
+  db.prepare('UPDATE long_term_findings SET is_archived = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+  res.json({ success: true });
 });
 
 // --- Videos ---
@@ -1681,6 +1748,7 @@ app.post('/api/videos/:videoId/thumbnails/:versionId/improve', async (req, res) 
     });
 
     const researchContext = loadThumbnailResearchContext();
+    const findingsBlock = getLongTermFindingsPromptBlock();
     const planSystemPrompt = `You are Nora's thumbnail optimization strategist.
 
 Return STRICT JSON with keys:
@@ -1693,7 +1761,10 @@ Return STRICT JSON with keys:
 No markdown. No prose outside JSON.
 
 Use this thumbnail research bible as hard context:
-${researchContext || '(No research document loaded.)'}`;
+${researchContext || '(No research document loaded.)'}
+
+Always apply these long-term creator findings:
+${findingsBlock || '(none)'}`;
 
     const planUserPrompt = `Video title: ${video.title}
 Current version label: ${getThumbnailVersionLabel(baseVersion)}
@@ -2165,6 +2236,8 @@ app.post('/api/davinci/chat', async (req, res) => {
   // Load Kona's personality
   const kona = loadKonaContext();
   
+  const findingsBlock = getLongTermFindingsPromptBlock();
+
   // Build system prompt
   const systemPrompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
@@ -2184,6 +2257,9 @@ You're helping Nora learn DaVinci Resolve Studio 20. She's building her video ed
 Nora already has these tips documented. Reference them when relevant:
 
 ${tipsContext}
+
+## Long-Term Findings (always apply)
+${findingsBlock || '(none)'}
 
 ## When Nora Says "Add This to the Doc"
 1. Detect which section the tip belongs to (based on topic: color, audio, shortcuts, etc.)
@@ -2250,6 +2326,16 @@ app.get('*', (req, res) => {
 });
 
 // ============ HELPERS ============
+
+function getLongTermFindings() {
+  return db.prepare('SELECT * FROM long_term_findings WHERE is_archived = 0 ORDER BY updated_at DESC, created_at DESC').all();
+}
+
+function getLongTermFindingsPromptBlock() {
+  const findings = getLongTermFindings();
+  if (!findings.length) return '';
+  return findings.map(f => `- ${f.content}`).join('\n');
+}
 
 function buildSystemPrompt(video, memory, globalMemory) {
   const kona = loadKonaContext();
@@ -2323,6 +2409,11 @@ ${video.voiceover_notes || '(empty)'}
 
 THUMBNAIL IDEAS:
 ${video.thumbnail_ideas || '(empty)'}`;
+
+  const findingsBlock = getLongTermFindingsPromptBlock();
+  if (findingsBlock) {
+    prompt += `\n\nLONG-TERM FINDINGS (always apply these unless Nora overrides):\n${findingsBlock}`;
+  }
 
   if (memory && memory.summary) {
     prompt += `\n\n--- CONVERSATION SUMMARY (earlier messages) ---\n${memory.summary}`;

@@ -489,6 +489,97 @@ function closeDeleteModal() {
   deleteTargetId = null;
 }
 
+// === Long-Term Findings ===
+let findingsData = [];
+
+async function loadFindings() {
+  try {
+    const res = await fetch('/api/findings');
+    findingsData = await res.json();
+    renderFindings();
+  } catch (err) {
+    console.error('Failed to load findings:', err);
+  }
+}
+
+function renderFindings() {
+  const list = document.getElementById('findings-list');
+  if (!list) return;
+
+  if (!findingsData.length) {
+    list.innerHTML = '<div class="tips-empty"><h3>No findings yet</h3><p>Add durable learnings Nora wants always applied.</p></div>';
+    return;
+  }
+
+  list.innerHTML = findingsData.map(item => {
+    const date = new Date(item.updated_at || item.created_at).toLocaleString();
+    return `
+      <div class="finding-card" data-id="${item.id}">
+        <div class="finding-content">${escapeHtml(item.content)}</div>
+        <div class="finding-meta">
+          <span>${escapeHtml(item.source || 'nora')} • ${date}</span>
+          <div class="finding-actions">
+            <button class="icon-btn" onclick="editFinding(${item.id})" title="Edit">✏️</button>
+            <button class="icon-btn" onclick="deleteFinding(${item.id})" title="Archive">🗑️</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function addFinding() {
+  const input = document.getElementById('finding-input');
+  if (!input) return;
+  const content = input.value.trim();
+  if (!content) return;
+
+  const res = await fetch('/api/findings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, source: 'nora' }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    showToast('Failed to add finding: ' + (data.error || 'Unknown error'));
+    return;
+  }
+
+  input.value = '';
+  await loadFindings();
+  showToast(data.duplicate ? 'Finding already existed' : 'Finding added');
+}
+
+async function editFinding(id) {
+  const finding = findingsData.find(f => Number(f.id) === Number(id));
+  if (!finding) return;
+  const next = prompt('Edit finding:', finding.content);
+  if (next === null) return;
+  const content = next.trim();
+  if (!content) return;
+
+  const res = await fetch(`/api/findings/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    showToast('Failed to edit finding: ' + (data.error || 'Unknown error'));
+    return;
+  }
+
+  await loadFindings();
+  showToast('Finding updated');
+}
+
+async function deleteFinding(id) {
+  if (!confirm('Archive this finding?')) return;
+  await fetch(`/api/findings/${id}`, { method: 'DELETE' });
+  await loadFindings();
+  showToast('Finding archived');
+}
+
 // === Workspace ===
 async function openVideo(id) {
   const res = await fetch(`/api/videos/${id}`);
@@ -1669,6 +1760,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadVideos();
   initResize();
   loadModelOptions();
+  loadFindings();
   updateCreditsDisplay();
   startCreditsRefresh();
 
@@ -1688,6 +1780,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // New video
   bind('#new-video-btn', 'click', createNewVideo);
+
+  // Long-term findings
+  bind('#add-finding-btn', 'click', addFinding);
+  bind('#finding-input', 'keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      addFinding();
+    }
+  });
 
   // Theme toggle
   bind('#theme-toggle', 'click', toggleTheme);
