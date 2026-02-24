@@ -926,6 +926,47 @@ body {
   white-space: normal;
 }
 
+.thumb-analysis-header {
+  margin-bottom: 8px;
+}
+
+.thumbnail-analysis-panel p {
+  margin: 0 0 8px;
+}
+
+.thumbnail-analysis-panel h2,
+.thumbnail-analysis-panel h3,
+.thumbnail-analysis-panel h4 {
+  margin: 8px 0 6px;
+}
+
+.thumbnail-analysis-panel ul {
+  margin: 0 0 8px 18px;
+}
+
+.thumbnail-analysis-panel .md-spacer {
+  height: 6px;
+}
+
+.thumb-analysis-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0 10px;
+  font-size: 12px;
+}
+
+.thumb-analysis-table th,
+.thumb-analysis-table td {
+  border: 1px solid var(--border);
+  padding: 6px 7px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.thumb-analysis-table th {
+  background: var(--bg-tertiary);
+}
+
 /* === Timing Widget === */
 .timing-widget { 
   display: flex; 

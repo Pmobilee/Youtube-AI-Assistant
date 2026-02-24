@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nora Writer</title>
+  <title>YouTube AI Assistant</title>
   <link rel="stylesheet" href="/css/style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -21,7 +21,7 @@
     <!-- Top Navigation (3 sections) -->
     <nav class="top-nav">
       <div class="nav-logo">
-        <h1>🌺 Nora Writer</h1>
+        <h1>🎬 YouTube AI Assistant</h1>
       </div>
       <div class="nav-tabs">
         <button class="nav-tab active" data-section="projects" onclick="switchSection('projects')">📹 Projects</button>
@@ -219,6 +219,10 @@
                   <span>🖼️ Drop thumbnail here or click to upload</span>
                   <input type="file" id="thumb-file-input" accept="image/*" hidden>
                 </div>
+                <h3>Version History</h3>
+                <div class="thumbnail-timeline" id="thumb-timeline">
+                  <!-- Version cards go here -->
+                </div>
                 <div class="thumbnail-current" id="thumb-current">
                   <!-- Current/latest thumbnail shown large -->
                 </div>
@@ -234,10 +238,6 @@
                 </div>
                 <div class="thumbnail-analysis-panel" id="thumb-analysis-output">
                   <em>No analysis yet. Upload/select a thumbnail and run analysis.</em>
-                </div>
-                <h3>Version History</h3>
-                <div class="thumbnail-timeline" id="thumb-timeline">
-                  <!-- Version cards go here -->
                 </div>
               </div>
             </div>

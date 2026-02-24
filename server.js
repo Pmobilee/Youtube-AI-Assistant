@@ -850,6 +850,7 @@ Rules:
 - Prioritize CTR + retention-safe packaging.
 - Give concrete edits Nora can apply immediately.
 - Keep it concise and structured.
+- Return PLAIN TEXT only (no markdown tables, no code fences).
 
 Use this research library as your benchmark:
 ${researchContext || '(No research document loaded.)'}`;
@@ -859,10 +860,11 @@ Thumbnail version: ${versionLabel}
 Notes: ${version.notes || '(none)'}
 
 Tasks:
-1) Score this thumbnail 1-10 for: clarity, curiosity, contrast, mobile legibility, title-synergy.
-2) Give top 5 changes in priority order.
-3) Provide 3 text-overlay options (max 5 words each).
-4) Provide 3 title-synergy hooks.
+1) Scores (1-10): clarity, curiosity, contrast, mobile legibility, title-synergy.
+2) Top 5 changes in priority order.
+3) 3 text-overlay options (max 5 words each).
+4) 3 title-synergy hooks.
+Format with short headings + bullets only.
 ${extraInstruction ? `5) Extra instruction from Nora: ${extraInstruction}` : ''}`;
 
   const apiMessages = [{

@@ -1,7 +1,7 @@
 {
-  "name": "nora-writer",
+  "name": "youtube-ai-assistant",
   "version": "1.0.0",
-  "description": "Video script workspace for Nora — collaborative writing with Kona AI",
+  "description": "Collaborative YouTube ideation + scripting workspace with AI copilots",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

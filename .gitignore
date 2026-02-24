@@ -1,27 +1,36 @@
 # Dependencies
 node_modules/
 
-# Data & Uploads
-data/
+# Runtime data / uploads
 uploads/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/runtime_settings.json
+data/global_memory.json
 
-# Database files
-*.db
-*.db-wal
-*.db-shm
-
-# Environment
+# Environment / secrets
 .env
 .env.local
+.secrets*
 
 # Logs
 *.log
 npm-debug.log*
 
-# OS
+# OS / editor
 .DS_Store
 Thumbs.db
-
-# Editor
 .vscode/
 .idea/
+
+# Generated backups / scratch
+*.bak
+*.bak-*
+*.backup
+*.backup-*
+*.pre-*.bak
+public.backup*/
+backups/
+.implementation-*/
+.data/

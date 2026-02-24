@@ -12,6 +12,19 @@ let selectedImageAnalysisProvider = 'claude';
 let creditsRefreshTimer = null;
 let thumbnailVersions = [];
 let selectedThumbnailVersionId = null;
+let isPaneSyncing = false;
+
+const tabToChannelMap = {
+  script: 'script',
+  description: 'description',
+  thumbnails: 'thumbnail',
+};
+
+const channelToTabMap = {
+  script: 'script',
+  description: 'description',
+  thumbnail: 'thumbnails',
+};
 
 // === DOM refs ===
 const $ = (sel) => document.querySelector(sel);
@@ -546,6 +559,17 @@ async function switchChatChannel(channel) {
   document.querySelectorAll('.chat-tab').forEach(t => 
     t.classList.toggle('active', t.dataset.channel === channel)
   );
+
+  const mappedTab = channelToTabMap[channel];
+  if (mappedTab && !isPaneSyncing) {
+    const tabEl = document.querySelector(`.tab[data-tab="${mappedTab}"]`);
+    if (tabEl && !tabEl.classList.contains('active')) {
+      isPaneSyncing = true;
+      switchTab(mappedTab);
+      isPaneSyncing = false;
+    }
+  }
+
   // Load messages for this channel
   if (currentVideo) {
     await loadChannelMessages(currentVideo.id, channel);
@@ -1173,6 +1197,17 @@ function switchTab(tabName) {
   if (editors[editorId]) {
     setTimeout(() => editors[editorId].refresh(), 10);
   }
+
+  const mappedChannel = tabToChannelMap[tabName];
+  if (mappedChannel && !isPaneSyncing) {
+    const chatTab = document.querySelector(`.chat-tab[data-channel="${mappedChannel}"]`);
+    if (chatTab && !chatTab.classList.contains('active')) {
+      isPaneSyncing = true;
+      Promise.resolve(switchChatChannel(mappedChannel)).finally(() => {
+        isPaneSyncing = false;
+      });
+    }
+  }
   
   // Run SEO analysis when switching to SEO tab
   if (tabName === 'seo') {
@@ -1325,6 +1360,64 @@ function debounce(fn, delay) {
   };
 }
 
+function renderMarkdownPanel(mdText) {
+  const lines = String(mdText || '').replace(/\r\n/g, '\n').split('\n');
+  let i = 0;
+  const out = [];
+
+  const parseRow = (line) => line.split('|').map(c => c.trim()).filter(Boolean);
+
+  while (i < lines.length) {
+    const line = lines[i] || '';
+    const trimmed = line.trim();
+
+    const isTableHeader = line.includes('|')
+      && i + 1 < lines.length
+      && /^\s*\|?\s*:?-{3,}:?(\s*\|\s*:?-{3,}:?)+\s*\|?\s*$/.test(lines[i + 1]);
+
+    if (isTableHeader) {
+      const headers = parseRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+        rows.push(parseRow(lines[i]));
+        i++;
+      }
+      out.push('<table class="thumb-analysis-table"><thead><tr>' + headers.map(h => `<th>${escapeHtml(h)}</th>`).join('') + '</tr></thead><tbody>');
+      rows.forEach(r => {
+        out.push('<tr>' + r.map(c => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>');
+      });
+      out.push('</tbody></table>');
+      continue;
+    }
+
+    if (/^###\s+/.test(trimmed)) { out.push(`<h4>${escapeHtml(trimmed.replace(/^###\s+/, ''))}</h4>`); i++; continue; }
+    if (/^##\s+/.test(trimmed)) { out.push(`<h3>${escapeHtml(trimmed.replace(/^##\s+/, ''))}</h3>`); i++; continue; }
+    if (/^#\s+/.test(trimmed)) { out.push(`<h2>${escapeHtml(trimmed.replace(/^#\s+/, ''))}</h2>`); i++; continue; }
+
+    if (/^[-*]\s+/.test(trimmed)) {
+      const items = [];
+      while (i < lines.length && /^[-*]\s+/.test((lines[i] || '').trim())) {
+        items.push((lines[i] || '').trim().replace(/^[-*]\s+/, ''));
+        i++;
+      }
+      out.push('<ul>' + items.map(item => `<li>${escapeHtml(item)}</li>`).join('') + '</ul>');
+      continue;
+    }
+
+    if (!trimmed) {
+      out.push('<div class="md-spacer"></div>');
+      i++;
+      continue;
+    }
+
+    out.push(`<p>${escapeHtml(trimmed)}</p>`);
+    i++;
+  }
+
+  return out.join('');
+}
+
 // === Thumbnails ===
 function getSelectedThumbnailVersion() {
   return thumbnailVersions.find(v => Number(v.id) === Number(selectedThumbnailVersionId)) || null;
@@ -1351,7 +1444,7 @@ function renderSelectedThumbnail() {
   if (analysisOutput) {
     if (selected.analysis) {
       const provider = selected.analysis_provider ? `(${selected.analysis_provider})` : '';
-      analysisOutput.innerHTML = `<strong>Analysis ${provider}</strong><br>${escapeHtml(selected.analysis).replace(/\n/g, '<br>')}`;
+      analysisOutput.innerHTML = `<div class="thumb-analysis-header"><strong>Analysis ${provider}</strong></div>${renderMarkdownPanel(selected.analysis)}`;
     } else {
       analysisOutput.innerHTML = '<em>No analysis yet. Click “Analyze Selected”.</em>';
     }
