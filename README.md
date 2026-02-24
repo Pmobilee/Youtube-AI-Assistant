@@ -54,3 +54,32 @@ Open: `http://localhost:3000`
 - Use **⚙️ Settings** to manage API keys and provider/model selection.
 - Keys are written to local `.env` (ignored by git) and only masked hints are shown in UI.
 - Image generation stays on Nanobanana route.
+
+## Sync live instance to this GitHub mirror (publish-safe)
+If your live app is running from another folder (for example `/root/.openclaw/nora-writer`), use:
+
+```bash
+./scripts/sync-from-live.sh --source /root/.openclaw/nora-writer
+```
+
+This sync excludes secrets/runtime files using `.syncignore` (`.env`, DB files, uploads, backups, etc.).
+To sync + push in one command (using Vault PAT):
+
+```bash
+./scripts/sync-live-and-push.sh /root/.openclaw/nora-writer
+```
+
+Vault token helper (push only):
+
+```bash
+./scripts/push-github-with-vault.sh github main
+```
+
+Expected Vault entry name: `GitHub PAT` (password field = token).
+
+## Cross-platform release artifacts (Linux / Windows / macOS)
+A GitHub Actions workflow is included at `.github/workflows/release.yml`.
+
+- Push a tag like `v1.0.1` to trigger packaging on Linux/Windows/macOS.
+- Each run uploads OS-specific `.zip` artifacts.
+- Tag runs also publish a GitHub Release with all artifacts attached.

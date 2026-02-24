@@ -1,30 +1,15 @@
-# Dependencies
+.git/
 node_modules/
-
-# Runtime data / uploads
+.env
+.env.local
+.secrets*
 uploads/
 data/*.db
 data/*.db-wal
 data/*.db-shm
 data/runtime_settings.json
 data/global_memory.json
-
-# Environment / secrets
-.env
-.env.local
-.secrets*
-
-# Logs
 *.log
-npm-debug.log*
-
-# OS / editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# Generated backups / scratch
 *.bak
 *.bak-*
 *.backup
@@ -34,4 +19,3 @@ public.backup*/
 backups/
 .implementation-*/
 .data/
-dist/
