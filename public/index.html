@@ -28,19 +28,9 @@
         <button class="nav-tab" data-section="davinci-chat" onclick="switchSection('davinci-chat')">💬 DaVinci Chat</button>
         <button class="nav-tab" data-section="tips" onclick="switchSection('tips')">📚 Tips & Tricks</button>
         <button class="nav-tab" data-section="findings" onclick="switchSection('findings')">🧠 Long-Term Findings</button>
+        <button class="nav-tab" data-section="settings" onclick="switchSection('settings')">⚙️ Settings</button>
       </div>
       <div class="nav-actions">
-        <div class="top-status" title="Claude API status">
-          <span id="credits-pill" class="status-pill">Claude credits: checking…</span>
-          <label class="model-picker-inline">
-            <span>Model</span>
-            <select id="global-model-select" class="status-select model-select-inline"></select>
-          </label>
-          <label class="model-picker-inline">
-            <span>Image analysis</span>
-            <select id="global-image-analysis-select" class="status-select model-select-inline"></select>
-          </label>
-        </div>
         <button id="theme-toggle-nav" class="btn btn-icon" title="Toggle dark mode">🌙</button>
       </div>
     </nav>
@@ -334,6 +324,76 @@
         </div>
         <div class="findings-note">These are always injected into script writing, thumbnail analysis, and thumbnail generation prompts.</div>
         <div class="findings-list" id="findings-list"></div>
+      </div>
+    </div>
+
+    <!-- Settings View -->
+    <div id="settings-view" class="view section-view" data-section="settings">
+      <div class="tips-container settings-container">
+        <div class="tips-header">
+          <h2>⚙️ Provider & Model Settings</h2>
+          <div class="tips-actions settings-actions">
+            <button class="btn btn-ghost" id="settings-refresh-models-btn">🔄 Refresh Models</button>
+            <button class="btn btn-primary" id="settings-save-btn">💾 Save Settings</button>
+          </div>
+        </div>
+
+        <div class="settings-note">
+          Keys are stored in the local <code>.env</code> on this server and never rendered back in full.
+        </div>
+
+        <div class="settings-grid">
+          <section class="settings-card">
+            <h3>Text Provider</h3>
+            <label class="settings-field">
+              <span>Provider</span>
+              <select id="settings-text-provider-select" class="status-select"></select>
+            </label>
+            <label class="settings-field">
+              <span>Model</span>
+              <select id="settings-text-model-select" class="status-select"></select>
+            </label>
+            <label class="settings-field">
+              <span>Image analysis provider</span>
+              <select id="settings-image-analysis-select" class="status-select"></select>
+            </label>
+            <div id="settings-model-hint" class="settings-hint">Pick provider + model, then Save Settings.</div>
+          </section>
+
+          <section class="settings-card">
+            <h3>API Keys</h3>
+            <div class="settings-key-grid">
+              <label class="settings-field">
+                <span>Claude (Anthropic)</span>
+                <input id="settings-key-anthropic" type="password" autocomplete="off" placeholder="sk-ant-..." />
+                <small id="settings-key-hint-anthropic" class="settings-key-hint">Not set</small>
+              </label>
+              <label class="settings-field">
+                <span>OpenAI</span>
+                <input id="settings-key-openai" type="password" autocomplete="off" placeholder="sk-..." />
+                <small id="settings-key-hint-openai" class="settings-key-hint">Not set</small>
+              </label>
+              <label class="settings-field">
+                <span>Grok (xAI)</span>
+                <input id="settings-key-xai" type="password" autocomplete="off" placeholder="xai-..." />
+                <small id="settings-key-hint-xai" class="settings-key-hint">Not set</small>
+              </label>
+              <label class="settings-field">
+                <span>Gemini</span>
+                <input id="settings-key-gemini" type="password" autocomplete="off" placeholder="AIza..." />
+                <small id="settings-key-hint-gemini" class="settings-key-hint">Not set</small>
+              </label>
+              <label class="settings-field">
+                <span>OpenRouter</span>
+                <input id="settings-key-openrouter" type="password" autocomplete="off" placeholder="sk-or-..." />
+                <small id="settings-key-hint-openrouter" class="settings-key-hint">Not set</small>
+              </label>
+            </div>
+            <div class="settings-hint">Leave a key blank to keep current value unchanged.</div>
+          </section>
+        </div>
+
+        <div id="settings-save-status" class="settings-save-status"></div>
       </div>
     </div>
 

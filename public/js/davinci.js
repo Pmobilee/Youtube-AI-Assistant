@@ -30,6 +30,8 @@ function switchSection(section) {
     loadDavinciChat();
   } else if (section === 'findings') {
     if (typeof loadFindings === 'function') loadFindings();
+  } else if (section === 'settings') {
+    if (typeof loadSettingsPage === 'function') loadSettingsPage();
   }
 }
 

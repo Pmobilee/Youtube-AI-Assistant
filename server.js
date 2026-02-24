@@ -5,12 +5,15 @@ const multer = require('multer');
 const Database = require('better-sqlite3');
 const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk');
+const dotenv = require('dotenv');
 // Native fetch for Node 18+ (fallback for older versions)
 const fetch = globalThis.fetch || require('node-fetch');
 // child_process kept intentionally unused
 
+dotenv.config({ path: path.join(__dirname, '.env') });
+
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // --- Database Setup ---
 const dataDir = path.join(__dirname, 'data');
@@ -284,18 +287,57 @@ if (!fs.existsSync(globalMemoryPath)) {
   }, null, 2));
 }
 
-// --- Model clients: Claude everywhere, OpenRouter only for image tasks ---
+// --- Model clients, runtime settings, and secure local env updates ---
 const runtimeSettingsPath = path.join(dataDir, 'runtime_settings.json');
+const envFilePath = path.join(__dirname, '.env');
 
-const staticTextModelOptions = (process.env.NORA_WRITER_MODEL_OPTIONS || 'claude-sonnet-4-6,claude-opus-4-6,claude-sonnet-4-5-20250929')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+const textProviderCatalog = [
+  { id: 'anthropic', label: 'Claude (Anthropic)', envKey: 'ANTHROPIC_API_KEY' },
+  { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY' },
+  { id: 'xai', label: 'Grok (xAI)', envKey: 'XAI_API_KEY' },
+  { id: 'gemini', label: 'Gemini (Google AI Studio)', envKey: 'GEMINI_API_KEY' },
+  { id: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY' },
+];
 
-const pinnedTextModels = (process.env.NORA_WRITER_MODEL_PINNED || 'claude-sonnet-4-6,claude-opus-4-6,claude-sonnet-4-5-20250929')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+const textProviderIds = textProviderCatalog.map(p => p.id);
+
+const defaultProviderModels = {
+  anthropic: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-sonnet-4-5-20250929'],
+  openai: ['gpt-5-mini', 'gpt-4.1-mini', 'gpt-4o-mini'],
+  xai: ['grok-4-0709', 'grok-3-mini'],
+  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  openrouter: ['anthropic/claude-sonnet-4.5', 'google/gemini-2.5-pro', 'openai/gpt-5-mini'],
+};
+
+function uniqStrings(items) {
+  return [...new Set((items || []).filter(Boolean).map(s => String(s).trim()).filter(Boolean))];
+}
+
+function parseCsv(value, fallback = []) {
+  const parsed = String(value || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  return parsed.length ? parsed : fallback;
+}
+
+const staticAnthropicModelOptions = parseCsv(
+  process.env.NORA_WRITER_MODEL_OPTIONS,
+  defaultProviderModels.anthropic
+);
+
+const pinnedAnthropicModels = parseCsv(
+  process.env.NORA_WRITER_MODEL_PINNED,
+  defaultProviderModels.anthropic
+);
+
+const providerFallbackModels = {
+  anthropic: uniqStrings([...pinnedAnthropicModels, ...staticAnthropicModelOptions, ...defaultProviderModels.anthropic]),
+  openai: parseCsv(process.env.NORA_WRITER_OPENAI_MODEL_OPTIONS, defaultProviderModels.openai),
+  xai: parseCsv(process.env.NORA_WRITER_XAI_MODEL_OPTIONS, defaultProviderModels.xai),
+  gemini: parseCsv(process.env.NORA_WRITER_GEMINI_MODEL_OPTIONS, defaultProviderModels.gemini),
+  openrouter: parseCsv(process.env.NORA_WRITER_OPENROUTER_TEXT_MODELS, defaultProviderModels.openrouter),
+};
 
 function loadRuntimeSettings() {
   try {
@@ -316,26 +358,133 @@ function saveRuntimeSettings(next) {
   }
 }
 
+function parseEnvLine(line) {
+  const match = String(line || '').match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+  if (!match) return null;
+  let value = match[2] ?? '';
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1);
+  }
+  return { key: match[1], value };
+}
+
+function formatEnvValue(value) {
+  const v = String(value ?? '').trim();
+  if (!v) return '';
+  if (/\s|#|"|'/.test(v)) {
+    return JSON.stringify(v);
+  }
+  return v;
+}
+
+function applyEnvValue(key, value) {
+  if (!key) return;
+  if (value === '' || value === null || value === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = String(value);
+}
+
+function updateEnvFile(updates = {}) {
+  const keys = Object.keys(updates || {});
+  if (!keys.length) return;
+
+  const existing = fs.existsSync(envFilePath)
+    ? fs.readFileSync(envFilePath, 'utf-8').split(/\r?\n/)
+    : [];
+
+  const updateSet = new Set(keys);
+  const retained = existing.filter(line => {
+    const parsed = parseEnvLine(line);
+    if (!parsed) return true;
+    return !updateSet.has(parsed.key);
+  });
+
+  for (const key of keys) {
+    const nextValue = updates[key];
+    if (nextValue === undefined) continue;
+    if (nextValue === '' || nextValue === null) {
+      applyEnvValue(key, '');
+      continue;
+    }
+    retained.push(`${key}=${formatEnvValue(nextValue)}`);
+    applyEnvValue(key, String(nextValue).trim());
+  }
+
+  const out = retained.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  fs.writeFileSync(envFilePath, out ? `${out}\n` : '');
+}
+
+function maskSecret(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.length <= 4) return '••••';
+  return `••••${raw.slice(-4)}`;
+}
+
 const runtimeSettings = loadRuntimeSettings();
-let selectedTextModel = runtimeSettings.selectedTextModel || process.env.NORA_WRITER_MODEL || staticTextModelOptions[0] || pinnedTextModels[0] || 'claude-sonnet-4-6';
 
-const anthropicApiKey = process.env.ANTHROPIC_API_KEY || '';
-const anthropicClient = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
+let selectedTextProvider = runtimeSettings.selectedTextProvider || process.env.NORA_WRITER_TEXT_PROVIDER || 'anthropic';
+if (!textProviderIds.includes(selectedTextProvider)) {
+  selectedTextProvider = 'anthropic';
+}
 
-const openRouterApiKey = process.env.OPENROUTER_API_KEY || '';
-const openRouterBaseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
-const openRouterClient = openRouterApiKey
-  ? new OpenAI({ apiKey: openRouterApiKey, baseURL: openRouterBaseUrl })
-  : null;
+let selectedProviderModels = (runtimeSettings.selectedProviderModels && typeof runtimeSettings.selectedProviderModels === 'object')
+  ? { ...runtimeSettings.selectedProviderModels }
+  : {};
 
-const imageModelCandidates = (
-  process.env.NORA_WRITER_IMAGE_MODELS ||
-  process.env.NORA_WRITER_VISION_MODEL ||
-  'google/gemini-2.5-pro,google/gemini-2.5-flash-image-preview,google/gemini-2.5-flash'
-)
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+let selectedTextModel = runtimeSettings.selectedTextModel
+  || selectedProviderModels[selectedTextProvider]
+  || process.env.NORA_WRITER_MODEL
+  || providerFallbackModels[selectedTextProvider]?.[0]
+  || 'claude-sonnet-4-6';
+
+function setSelectedModelForProvider(provider, model, { persist = true } = {}) {
+  if (!provider || !model) return;
+  selectedProviderModels[provider] = model;
+  if (provider === selectedTextProvider) {
+    selectedTextModel = model;
+  }
+  runtimeSettings.selectedProviderModels = selectedProviderModels;
+  runtimeSettings.selectedTextProvider = selectedTextProvider;
+  runtimeSettings.selectedTextModel = selectedTextModel;
+  if (persist) saveRuntimeSettings(runtimeSettings);
+}
+
+let anthropicClient = null;
+let openAiClient = null;
+let xaiClient = null;
+let openRouterClient = null;
+let geminiApiKey = '';
+let openRouterApiKey = '';
+let openRouterBaseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+let openAiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+let xaiBaseUrl = process.env.XAI_BASE_URL || 'https://api.x.ai/v1';
+
+function refreshApiClients() {
+  const anthropicApiKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
+  const openAiApiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  const xaiApiKey = String(process.env.XAI_API_KEY || '').trim();
+  geminiApiKey = String(process.env.GEMINI_API_KEY || '').trim();
+
+  openRouterApiKey = String(process.env.OPENROUTER_API_KEY || '').trim();
+  openRouterBaseUrl = String(process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').trim();
+  openAiBaseUrl = String(process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim();
+  xaiBaseUrl = String(process.env.XAI_BASE_URL || 'https://api.x.ai/v1').trim();
+
+  anthropicClient = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
+  openAiClient = openAiApiKey ? new OpenAI({ apiKey: openAiApiKey, baseURL: openAiBaseUrl }) : null;
+  xaiClient = xaiApiKey ? new OpenAI({ apiKey: xaiApiKey, baseURL: xaiBaseUrl }) : null;
+  openRouterClient = openRouterApiKey ? new OpenAI({ apiKey: openRouterApiKey, baseURL: openRouterBaseUrl }) : null;
+}
+
+refreshApiClients();
+
+const imageModelCandidates = parseCsv(
+  process.env.NORA_WRITER_IMAGE_MODELS || process.env.NORA_WRITER_VISION_MODEL,
+  ['google/gemini-2.5-pro', 'google/gemini-2.5-flash-image-preview', 'google/gemini-2.5-flash']
+);
 
 const imageGenerationModel = process.env.NORA_WRITER_NANOBANANA_MODEL || imageModelCandidates[0] || 'google/gemini-2.5-pro';
 const imageAnalysisProviderOptions = ['claude', 'nanobanana'];
@@ -369,12 +518,26 @@ function loadThumbnailResearchContext() {
 }
 
 const modelCache = {
-  models: [],
-  fetchedAt: 0,
+  anthropic: { models: [], fetchedAt: 0 },
+  openai: { models: [], fetchedAt: 0 },
+  xai: { models: [], fetchedAt: 0 },
+  gemini: { models: [], fetchedAt: 0 },
+  openrouter: { models: [], fetchedAt: 0 },
 };
 
-function uniqStrings(items) {
-  return [...new Set((items || []).filter(Boolean).map(s => String(s).trim()).filter(Boolean))];
+function clearModelCache(provider = null) {
+  if (!provider) {
+    Object.keys(modelCache).forEach(key => {
+      modelCache[key].models = [];
+      modelCache[key].fetchedAt = 0;
+    });
+    return;
+  }
+
+  if (modelCache[provider]) {
+    modelCache[provider].models = [];
+    modelCache[provider].fetchedAt = 0;
+  }
 }
 
 function scoreModelForOrdering(modelId) {
@@ -384,6 +547,14 @@ function scoreModelForOrdering(modelId) {
   if (id.includes('sonnet') && (id.includes('4-6') || id.includes('4.6'))) score += 1000;
   if (id.includes('opus') && (id.includes('4-6') || id.includes('4.6'))) score += 950;
   if (id.includes('sonnet') && (id.includes('4-5') || id.includes('4.5'))) score += 900;
+
+  if (id.includes('gpt-5')) score += 890;
+  if (id.includes('gpt-4.1')) score += 860;
+  if (id.includes('gpt-4o')) score += 840;
+  if (id.includes('grok-4')) score += 870;
+  if (id.includes('grok-3')) score += 830;
+  if (id.includes('gemini-2.5-pro')) score += 880;
+  if (id.includes('gemini-2.5-flash')) score += 850;
 
   if (id.includes('sonnet')) score += 120;
   if (id.includes('opus')) score += 110;
@@ -402,6 +573,28 @@ function sortTextModels(models) {
       if (diff !== 0) return diff;
       return a.localeCompare(b);
     });
+}
+
+function providerIsConfigured(provider) {
+  const entry = textProviderCatalog.find(p => p.id === provider);
+  if (!entry) return false;
+  return Boolean(String(process.env[entry.envKey] || '').trim());
+}
+
+function providerStatus() {
+  return textProviderCatalog.map(entry => {
+    const raw = String(process.env[entry.envKey] || '').trim();
+    return {
+      id: entry.id,
+      label: entry.label,
+      configured: Boolean(raw),
+      keyHint: maskSecret(raw),
+    };
+  });
+}
+
+function getProviderFallbackModels(provider) {
+  return uniqStrings(providerFallbackModels[provider] || defaultProviderModels[provider] || []);
 }
 
 async function fetchAnthropicModelIds() {
@@ -425,71 +618,163 @@ async function fetchAnthropicModelIds() {
   return uniqStrings(ids);
 }
 
-async function getAvailableTextModels({ force = false } = {}) {
+async function fetchOpenAIStyleModelIds(client) {
+  if (!client) return [];
+  const result = await client.models.list();
+  const data = Array.isArray(result?.data) ? result.data : [];
+  return uniqStrings(data.map(m => m?.id).filter(Boolean));
+}
+
+async function fetchOpenRouterModelIds() {
+  if (!openRouterApiKey) return [];
+  const url = `${openRouterBaseUrl.replace(/\/$/, '')}/models`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${openRouterApiKey}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenRouter model list failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  return uniqStrings(rows.map(row => row?.id).filter(Boolean));
+}
+
+async function fetchGeminiModelIds() {
+  if (!geminiApiKey) return [];
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiApiKey)}`;
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Gemini model list failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  const rows = Array.isArray(payload?.models) ? payload.models : [];
+
+  return uniqStrings(
+    rows
+      .filter(row => {
+        const methods = Array.isArray(row?.supportedGenerationMethods) ? row.supportedGenerationMethods : [];
+        return methods.includes('generateContent') || methods.includes('streamGenerateContent');
+      })
+      .map(row => String(row?.name || '').replace(/^models\//, '').trim())
+      .filter(Boolean)
+  );
+}
+
+async function getAvailableTextModels({ provider = selectedTextProvider, force = false } = {}) {
+  const normalizedProvider = textProviderIds.includes(provider) ? provider : 'anthropic';
+  const cache = modelCache[normalizedProvider] || { models: [], fetchedAt: 0 };
   const now = Date.now();
   const cacheTtlMs = 10 * 60 * 1000;
 
-  if (!force && modelCache.models.length > 0 && (now - modelCache.fetchedAt) < cacheTtlMs) {
-    return modelCache.models;
+  if (!force && cache.models.length > 0 && (now - cache.fetchedAt) < cacheTtlMs) {
+    return cache.models;
   }
 
-  const fallback = sortTextModels([...pinnedTextModels, ...staticTextModelOptions]);
-
-  if (!anthropicClient) {
-    modelCache.models = fallback;
-    modelCache.fetchedAt = now;
-    return modelCache.models;
-  }
+  const fallback = sortTextModels(getProviderFallbackModels(normalizedProvider));
 
   try {
-    const discovered = await fetchAnthropicModelIds();
-    modelCache.models = sortTextModels([...discovered, ...pinnedTextModels, ...staticTextModelOptions]);
-    modelCache.fetchedAt = now;
-    return modelCache.models;
+    let discovered = [];
+    if (normalizedProvider === 'anthropic') discovered = await fetchAnthropicModelIds();
+    if (normalizedProvider === 'openai') discovered = await fetchOpenAIStyleModelIds(openAiClient);
+    if (normalizedProvider === 'xai') discovered = await fetchOpenAIStyleModelIds(xaiClient);
+    if (normalizedProvider === 'gemini') discovered = await fetchGeminiModelIds();
+    if (normalizedProvider === 'openrouter') discovered = await fetchOpenRouterModelIds();
+
+    const merged = sortTextModels([...discovered, ...fallback]);
+    cache.models = merged;
+    cache.fetchedAt = now;
+    modelCache[normalizedProvider] = cache;
+    return merged;
   } catch (err) {
-    console.warn('Anthropic model scan failed, using fallback list:', err.message);
-    modelCache.models = modelCache.models.length ? modelCache.models : fallback;
-    modelCache.fetchedAt = now;
-    return modelCache.models;
+    console.warn(`${normalizedProvider} model scan failed, using fallback list:`, err.message);
+    cache.models = cache.models.length ? cache.models : fallback;
+    cache.fetchedAt = now;
+    modelCache[normalizedProvider] = cache;
+    return cache.models;
   }
 }
 
-async function ensureSelectedTextModel() {
-  const models = await getAvailableTextModels();
-  if (!models.length) {
-    return { models: [], selectedModel: selectedTextModel };
+async function ensureSelectedTextModel({ provider = selectedTextProvider, force = false, activateProvider = true } = {}) {
+  const normalizedProvider = textProviderIds.includes(provider) ? provider : 'anthropic';
+
+  const models = await getAvailableTextModels({ provider: normalizedProvider, force });
+  const savedModel = selectedProviderModels[normalizedProvider];
+  const currentModel = normalizedProvider === selectedTextProvider ? selectedTextModel : '';
+  let nextModel = savedModel || currentModel || getProviderFallbackModels(normalizedProvider)[0] || '';
+
+  if (models.length && !models.includes(nextModel)) {
+    nextModel = models[0];
   }
 
-  if (!selectedTextModel || !models.includes(selectedTextModel)) {
-    selectedTextModel = models[0];
-    runtimeSettings.selectedTextModel = selectedTextModel;
-    saveRuntimeSettings(runtimeSettings);
+  if (!nextModel && models.length) {
+    nextModel = models[0];
   }
+
+  if (nextModel) {
+    selectedProviderModels[normalizedProvider] = nextModel;
+  }
+
+  if (activateProvider) {
+    selectedTextProvider = normalizedProvider;
+    selectedTextModel = nextModel || selectedTextModel;
+  }
+
+  runtimeSettings.selectedTextProvider = selectedTextProvider;
+  runtimeSettings.selectedTextModel = selectedTextModel;
+  runtimeSettings.selectedProviderModels = selectedProviderModels;
+  saveRuntimeSettings(runtimeSettings);
 
   return {
+    provider: normalizedProvider,
     models,
-    selectedModel: selectedTextModel,
+    selectedModel: nextModel || selectedTextModel,
   };
 }
 
-console.log(`✓ Nora Writer text provider: Anthropic | model=${selectedTextModel}`);
-console.log(`✓ Nora Writer image provider: OpenRouter | models=${imageModelCandidates.join(', ')}`);
-console.log(`✓ Nora Writer image-analysis provider: ${selectedImageAnalysisProvider}`);
+console.log(`✓ YouTube AI Assistant text provider: ${selectedTextProvider} | model=${selectedTextModel}`);
+console.log(`✓ YouTube AI Assistant image provider: OpenRouter | models=${imageModelCandidates.join(', ')}`);
+console.log(`✓ YouTube AI Assistant image-analysis provider: ${selectedImageAnalysisProvider}`);
 
 function toOpenAIMessages(systemPrompt, apiMessages) {
   const normalized = (apiMessages || []).map(m => {
     if (Array.isArray(m.content)) {
       const parts = m.content.map(part => {
-        if (part?.type === 'text') return { type: 'text', text: part.text || '' };
+        if (part?.type === 'text') {
+          return { type: 'text', text: part.text || '' };
+        }
+
         if (part?.type === 'image' && part?.source?.url) {
           return { type: 'image_url', image_url: { url: part.source.url } };
         }
+
+        if (part?.type === 'image' && part?.source?.type === 'base64' && part?.source?.data) {
+          const mediaType = part?.source?.media_type || 'image/png';
+          return {
+            type: 'image_url',
+            image_url: { url: `data:${mediaType};base64,${part.source.data}` }
+          };
+        }
+
+        if (part?.type === 'image_url' && part?.image_url?.url) {
+          return part;
+        }
+
         return { type: 'text', text: String(part?.text || '') };
       });
-      return { role: m.role, content: parts };
+
+      return { role: m.role, content: parts.length ? parts : [{ type: 'text', text: '' }] };
     }
+
     return { role: m.role, content: m.content || '' };
   });
+
   return [{ role: 'system', content: systemPrompt }, ...normalized];
 }
 
@@ -574,13 +859,23 @@ function toAnthropicMessages(apiMessages) {
 
 function hasImageContent(apiMessages) {
   return (apiMessages || []).some(m =>
-    Array.isArray(m.content) && m.content.some(part => part?.type === 'image' && part?.source?.url)
+    Array.isArray(m.content)
+    && m.content.some(part => part?.type === 'image' && (part?.source?.url || part?.source?.data))
   );
+}
+
+function providerMissingKeyError(provider) {
+  if (provider === 'anthropic') return 'ANTHROPIC_API_KEY is missing.';
+  if (provider === 'openai') return 'OPENAI_API_KEY is missing.';
+  if (provider === 'xai') return 'XAI_API_KEY is missing.';
+  if (provider === 'gemini') return 'GEMINI_API_KEY is missing.';
+  if (provider === 'openrouter') return 'OPENROUTER_API_KEY is missing.';
+  return 'Required API key is missing.';
 }
 
 async function streamAnthropicTextResponse({ systemPrompt, apiMessages, onText, model }) {
   if (!anthropicClient) {
-    throw new Error('ANTHROPIC_API_KEY is missing.');
+    throw new Error(providerMissingKeyError('anthropic'));
   }
 
   const stream = anthropicClient.messages.stream({
@@ -611,6 +906,203 @@ async function streamAnthropicTextResponse({ systemPrompt, apiMessages, onText, 
   return full;
 }
 
+async function streamOpenAICompatibleResponse({ client, provider, model, systemPrompt, apiMessages, onText }) {
+  if (!client) {
+    throw new Error(providerMissingKeyError(provider));
+  }
+
+  const stream = await client.chat.completions.create({
+    model,
+    stream: true,
+    max_tokens: 4096,
+    messages: toOpenAIMessages(systemPrompt, apiMessages)
+  });
+
+  let full = '';
+  for await (const chunk of stream) {
+    const delta = chunk?.choices?.[0]?.delta?.content;
+    const text = Array.isArray(delta) ? delta.map(part => String(part || '')).join('') : String(delta || '');
+    if (!text) continue;
+    full += text;
+    if (onText) onText(text);
+  }
+
+  if (!full.trim()) {
+    throw new Error(`${provider} model ${model} returned empty output.`);
+  }
+
+  return full;
+}
+
+function toGeminiContents(apiMessages) {
+  return (apiMessages || []).map(msg => {
+    const role = msg.role === 'assistant' ? 'model' : 'user';
+
+    if (!Array.isArray(msg.content)) {
+      return { role, parts: [{ text: String(msg.content || '') }] };
+    }
+
+    const parts = msg.content.map(part => {
+      if (part?.type === 'text') {
+        return { text: String(part?.text || '') };
+      }
+
+      if (part?.type === 'image' && part?.source?.type === 'base64' && part?.source?.data) {
+        return {
+          inlineData: {
+            mimeType: part?.source?.media_type || 'image/png',
+            data: part.source.data,
+          }
+        };
+      }
+
+      if (part?.type === 'image' && part?.source?.url) {
+        return { text: `[Image URL: ${part.source.url}]` };
+      }
+
+      return { text: String(part?.text || '') };
+    });
+
+    return { role, parts: parts.length ? parts : [{ text: '' }] };
+  });
+}
+
+async function runGeminiTextResponse({ model, systemPrompt, apiMessages, onText }) {
+  if (!geminiApiKey) {
+    throw new Error(providerMissingKeyError('gemini'));
+  }
+
+  const converted = convertLocalImageUrlsToBase64(apiMessages);
+  const body = {
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents: toGeminiContents(converted),
+    generationConfig: {
+      maxOutputTokens: 4096,
+      temperature: 0.7,
+    },
+  };
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Gemini generation failed (${response.status}): ${errText.slice(0, 240)}`);
+  }
+
+  const payload = await response.json();
+  const text = (payload?.candidates?.[0]?.content?.parts || [])
+    .map(part => part?.text || '')
+    .join('')
+    .trim();
+
+  if (!text) {
+    throw new Error(`Gemini model ${model} returned empty output.`);
+  }
+
+  if (onText) onText(text);
+  return text;
+}
+
+async function runProviderModelAttempt({ provider, model, systemPrompt, apiMessages, onText }) {
+  if (provider === 'anthropic') {
+    return streamAnthropicTextResponse({ systemPrompt, apiMessages, onText, model });
+  }
+
+  if (provider === 'openai') {
+    return streamOpenAICompatibleResponse({
+      client: openAiClient,
+      provider,
+      model,
+      systemPrompt,
+      apiMessages,
+      onText,
+    });
+  }
+
+  if (provider === 'xai') {
+    return streamOpenAICompatibleResponse({
+      client: xaiClient,
+      provider,
+      model,
+      systemPrompt,
+      apiMessages,
+      onText,
+    });
+  }
+
+  if (provider === 'openrouter') {
+    return streamOpenAICompatibleResponse({
+      client: openRouterClient,
+      provider,
+      model,
+      systemPrompt,
+      apiMessages,
+      onText,
+    });
+  }
+
+  if (provider === 'gemini') {
+    return runGeminiTextResponse({ model, systemPrompt, apiMessages, onText });
+  }
+
+  throw new Error(`Unsupported text provider: ${provider}`);
+}
+
+async function runProviderWithModelFallback({ provider, systemPrompt, apiMessages, onText, maxModels = 6, activateProvider = true }) {
+  const normalizedProvider = textProviderIds.includes(provider) ? provider : selectedTextProvider;
+  if (!providerIsConfigured(normalizedProvider)) {
+    throw new Error(providerMissingKeyError(normalizedProvider));
+  }
+
+  const { models, selectedModel } = await ensureSelectedTextModel({
+    provider: normalizedProvider,
+    force: false,
+    activateProvider,
+  });
+
+  const tryModels = uniqStrings([selectedModel, ...models, ...getProviderFallbackModels(normalizedProvider)]).slice(0, maxModels);
+  let lastErr = null;
+
+  for (const model of tryModels) {
+    try {
+      const text = await runProviderModelAttempt({
+        provider: normalizedProvider,
+        model,
+        systemPrompt,
+        apiMessages,
+        onText,
+      });
+
+      if (text && text.trim()) {
+        selectedProviderModels[normalizedProvider] = model;
+
+        if (activateProvider) {
+          selectedTextProvider = normalizedProvider;
+          selectedTextModel = model;
+        }
+
+        runtimeSettings.selectedTextProvider = selectedTextProvider;
+        runtimeSettings.selectedTextModel = selectedTextModel;
+        runtimeSettings.selectedProviderModels = selectedProviderModels;
+        saveRuntimeSettings(runtimeSettings);
+        return text;
+      }
+    } catch (err) {
+      lastErr = err;
+      console.warn(`${normalizedProvider} model ${model} failed, trying next:`, err.message);
+    }
+  }
+
+  throw lastErr || new Error(`All configured ${normalizedProvider} text models failed.`);
+}
+
 async function streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText }) {
   if (!openRouterClient) {
     throw new Error('OPENROUTER_API_KEY is missing for image analysis/generation.');
@@ -619,24 +1111,14 @@ async function streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onTex
   let lastErr = null;
   for (const model of imageModelCandidates) {
     try {
-      const stream = await openRouterClient.chat.completions.create({
+      return await streamOpenAICompatibleResponse({
+        client: openRouterClient,
+        provider: 'openrouter',
         model,
-        stream: true,
-        max_completion_tokens: 4096,
-        messages: toOpenAIMessages(systemPrompt, apiMessages)
+        systemPrompt,
+        apiMessages,
+        onText,
       });
-
-      let full = '';
-      for await (const chunk of stream) {
-        const delta = chunk?.choices?.[0]?.delta?.content || '';
-        if (delta) {
-          full += delta;
-          if (onText) onText(delta);
-        }
-      }
-
-      if (full.trim()) return full;
-      throw new Error(`OpenRouter model ${model} returned empty output.`);
     } catch (err) {
       lastErr = err;
       console.warn(`OpenRouter image model ${model} failed:`, err.message);
@@ -647,33 +1129,14 @@ async function streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onTex
 }
 
 async function runClaudeWithModelFallback({ systemPrompt, apiMessages, onText, maxModels = 6 }) {
-  const { models, selectedModel } = await ensureSelectedTextModel();
-  const tryModels = uniqStrings([selectedModel, ...models]).slice(0, maxModels);
-  let lastErr = null;
-
-  for (const model of tryModels) {
-    try {
-      const text = await streamAnthropicTextResponse({
-        systemPrompt,
-        apiMessages,
-        onText,
-        model,
-      });
-      if (text && text.trim()) {
-        if (selectedTextModel !== model) {
-          selectedTextModel = model;
-          runtimeSettings.selectedTextModel = selectedTextModel;
-          saveRuntimeSettings(runtimeSettings);
-        }
-        return text;
-      }
-    } catch (err) {
-      lastErr = err;
-      console.warn(`Anthropic model ${model} failed, trying next:`, err.message);
-    }
-  }
-
-  throw lastErr || new Error('All configured Claude text models failed.');
+  return runProviderWithModelFallback({
+    provider: 'anthropic',
+    systemPrompt,
+    apiMessages,
+    onText,
+    maxModels,
+    activateProvider: false,
+  });
 }
 
 async function runImageAnalysisResponse({ systemPrompt, apiMessages, onText, providerOverride = null }) {
@@ -693,47 +1156,28 @@ async function generateResponse({ systemPrompt, apiMessages, onText }) {
     return runImageAnalysisResponse({ systemPrompt, apiMessages, onText });
   }
 
-  return runClaudeWithModelFallback({ systemPrompt, apiMessages, onText, maxModels: 6 });
+  return runProviderWithModelFallback({
+    provider: selectedTextProvider,
+    systemPrompt,
+    apiMessages,
+    onText,
+    maxModels: 6,
+    activateProvider: true,
+  });
 }
 
 async function summarizeWithModel({ systemPrompt, userPrompt }) {
-  if (!anthropicClient) {
-    throw new Error('ANTHROPIC_API_KEY is missing.');
-  }
+  const fallbackProvider = providerStatus().find(p => p.configured)?.id || selectedTextProvider;
+  const summaryProvider = providerIsConfigured(selectedTextProvider) ? selectedTextProvider : fallbackProvider;
 
-  const { models, selectedModel } = await ensureSelectedTextModel();
-  const tryModels = uniqStrings([selectedModel, ...models]).slice(0, 6);
-  let lastErr = null;
-
-  for (const model of tryModels) {
-    try {
-      const result = await anthropicClient.messages.create({
-        model,
-        max_tokens: 1024,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
-      });
-
-      const text = (result?.content || [])
-        .filter(block => block?.type === 'text')
-        .map(block => block.text)
-        .join('');
-
-      if (text && text.trim()) {
-        if (selectedTextModel !== model) {
-          selectedTextModel = model;
-          runtimeSettings.selectedTextModel = selectedTextModel;
-          saveRuntimeSettings(runtimeSettings);
-        }
-        return text;
-      }
-    } catch (err) {
-      lastErr = err;
-      console.warn(`Summarization model ${model} failed, trying next:`, err.message);
-    }
-  }
-
-  throw lastErr || new Error('All Claude summarization models failed.');
+  return runProviderWithModelFallback({
+    provider: summaryProvider,
+    systemPrompt,
+    apiMessages: [{ role: 'user', content: userPrompt }],
+    onText: null,
+    maxModels: 4,
+    activateProvider: summaryProvider === selectedTextProvider,
+  });
 }
 
 function getThumbnailVersionLabel(version) {
@@ -1078,37 +1522,79 @@ async function compactDavinciContext(keepRecent = 20) {
 
 // ============ API ROUTES ============
 
-app.get('/api/models', async (req, res) => {
-  const { models, selectedModel } = await ensureSelectedTextModel();
-  res.json({
-    provider: 'anthropic',
-    selectedModel,
-    models,
+async function buildModelState({ force = false } = {}) {
+  const ensured = await ensureSelectedTextModel({
+    provider: selectedTextProvider,
+    force,
+    activateProvider: true,
+  });
+
+  return {
+    textProvider: ensured.provider,
+    selectedTextProvider: ensured.provider,
+    selectedModel: ensured.selectedModel,
+    models: ensured.models,
+    textProviders: providerStatus(),
     imageProvider: 'openrouter',
     imageModels: imageModelCandidates,
     imageGenerationModel,
     imageAnalysisProviders: imageAnalysisProviderOptions,
     selectedImageAnalysisProvider,
-  });
+  };
+}
+
+app.get('/api/models', async (req, res) => {
+  const state = await buildModelState();
+  res.json(state);
+});
+
+app.post('/api/models/refresh', async (req, res) => {
+  const provider = textProviderIds.includes(req.body?.provider) ? req.body.provider : selectedTextProvider;
+  clearModelCache(provider);
+  const state = await buildModelState({ force: true });
+  res.json({ success: true, ...state });
 });
 
 app.post('/api/models/select', async (req, res) => {
-  const { model } = req.body || {};
-  const models = await getAvailableTextModels({ force: true });
+  const requestedProvider = textProviderIds.includes(req.body?.provider)
+    ? req.body.provider
+    : selectedTextProvider;
 
-  if (!model || !models.includes(model)) {
+  const requestedModel = String(req.body?.model || '').trim();
+  const ensured = await ensureSelectedTextModel({
+    provider: requestedProvider,
+    force: true,
+    activateProvider: true,
+  });
+
+  if (requestedModel && !ensured.models.includes(requestedModel)) {
     return res.status(400).json({
       error: 'Invalid model selection',
-      models,
+      selectedTextProvider,
       selectedModel: selectedTextModel,
+      models: ensured.models,
     });
   }
 
-  selectedTextModel = model;
+  if (requestedModel) {
+    selectedTextProvider = requestedProvider;
+    selectedTextModel = requestedModel;
+    selectedProviderModels[selectedTextProvider] = selectedTextModel;
+  } else {
+    selectedTextProvider = requestedProvider;
+    selectedTextModel = ensured.selectedModel;
+    if (selectedTextModel) {
+      selectedProviderModels[selectedTextProvider] = selectedTextModel;
+    }
+  }
+
+  runtimeSettings.selectedTextProvider = selectedTextProvider;
   runtimeSettings.selectedTextModel = selectedTextModel;
+  runtimeSettings.selectedProviderModels = selectedProviderModels;
   saveRuntimeSettings(runtimeSettings);
 
-  res.json({ success: true, selectedModel: selectedTextModel, models });
+  const state = await buildModelState();
+  res.json({ success: true, ...state });
 });
 
 app.post('/api/models/image-analysis/select', (req, res) => {
@@ -1130,6 +1616,101 @@ app.post('/api/models/image-analysis/select', (req, res) => {
     selectedImageAnalysisProvider,
     providers: imageAnalysisProviderOptions,
   });
+});
+
+app.get('/api/settings', async (req, res) => {
+  const state = await buildModelState();
+  res.json({
+    success: true,
+    envFileExists: fs.existsSync(envFilePath),
+    providers: providerStatus(),
+    selectedTextProvider: state.selectedTextProvider,
+    selectedTextModel: state.selectedModel,
+    availableModels: state.models,
+    selectedImageAnalysisProvider,
+    imageAnalysisProviders: imageAnalysisProviderOptions,
+  });
+});
+
+app.post('/api/settings', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const keys = (body.keys && typeof body.keys === 'object') ? body.keys : {};
+
+    const envUpdates = {};
+    if (Object.prototype.hasOwnProperty.call(keys, 'anthropic')) envUpdates.ANTHROPIC_API_KEY = String(keys.anthropic || '').trim();
+    if (Object.prototype.hasOwnProperty.call(keys, 'openai')) envUpdates.OPENAI_API_KEY = String(keys.openai || '').trim();
+    if (Object.prototype.hasOwnProperty.call(keys, 'xai')) envUpdates.XAI_API_KEY = String(keys.xai || '').trim();
+    if (Object.prototype.hasOwnProperty.call(keys, 'gemini')) envUpdates.GEMINI_API_KEY = String(keys.gemini || '').trim();
+    if (Object.prototype.hasOwnProperty.call(keys, 'openrouter')) envUpdates.OPENROUTER_API_KEY = String(keys.openrouter || '').trim();
+
+    if (Object.prototype.hasOwnProperty.call(body, 'openRouterBaseUrl')) envUpdates.OPENROUTER_BASE_URL = String(body.openRouterBaseUrl || '').trim();
+    if (Object.prototype.hasOwnProperty.call(body, 'openAiBaseUrl')) envUpdates.OPENAI_BASE_URL = String(body.openAiBaseUrl || '').trim();
+    if (Object.prototype.hasOwnProperty.call(body, 'xaiBaseUrl')) envUpdates.XAI_BASE_URL = String(body.xaiBaseUrl || '').trim();
+
+    if (Object.keys(envUpdates).length > 0) {
+      updateEnvFile(envUpdates);
+      refreshApiClients();
+      clearModelCache();
+    }
+
+    const requestedProvider = textProviderIds.includes(body.selectedTextProvider)
+      ? body.selectedTextProvider
+      : selectedTextProvider;
+
+    const ensured = await ensureSelectedTextModel({
+      provider: requestedProvider,
+      force: true,
+      activateProvider: true,
+    });
+
+    const requestedModel = String(body.selectedTextModel || '').trim();
+    if (requestedModel) {
+      if (!ensured.models.includes(requestedModel)) {
+        return res.status(400).json({
+          error: 'Invalid selectedTextModel for the selected provider',
+          provider: requestedProvider,
+          models: ensured.models,
+        });
+      }
+      selectedTextModel = requestedModel;
+      selectedProviderModels[requestedProvider] = requestedModel;
+    } else {
+      selectedTextModel = ensured.selectedModel;
+      if (selectedTextModel) {
+        selectedProviderModels[requestedProvider] = selectedTextModel;
+      }
+    }
+
+    selectedTextProvider = requestedProvider;
+
+    if (body.selectedImageAnalysisProvider) {
+      if (!imageAnalysisProviderOptions.includes(body.selectedImageAnalysisProvider)) {
+        return res.status(400).json({
+          error: 'Invalid selectedImageAnalysisProvider',
+          providers: imageAnalysisProviderOptions,
+        });
+      }
+      selectedImageAnalysisProvider = body.selectedImageAnalysisProvider;
+    }
+
+    runtimeSettings.selectedTextProvider = selectedTextProvider;
+    runtimeSettings.selectedTextModel = selectedTextModel;
+    runtimeSettings.selectedProviderModels = selectedProviderModels;
+    runtimeSettings.selectedImageAnalysisProvider = selectedImageAnalysisProvider;
+    saveRuntimeSettings(runtimeSettings);
+
+    const state = await buildModelState();
+    res.json({
+      success: true,
+      ...state,
+      providers: providerStatus(),
+      selectedTextModel: selectedTextModel,
+      selectedImageAnalysisProvider,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to save settings' });
+  }
 });
 
 app.get('/api/credits', (req, res) => {

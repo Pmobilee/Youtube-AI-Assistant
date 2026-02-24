@@ -8,8 +8,9 @@ let pendingSuggestions = [];
 let activeSuggestionIdx = null;
 let availableModels = [];
 let selectedModel = '';
+let selectedTextProvider = 'anthropic';
+let availableTextProviders = [];
 let selectedImageAnalysisProvider = 'claude';
-let creditsRefreshTimer = null;
 let thumbnailVersions = [];
 let selectedThumbnailVersionId = null;
 let isPaneSyncing = false;
@@ -88,97 +89,287 @@ function updateEditorThemes() {
   });
 }
 
-// === Global Model + Credits ===
-async function loadModelOptions() {
-  const select = document.getElementById('global-model-select');
-  const imageSelect = document.getElementById('global-image-analysis-select');
-  if (!select) return;
+// === Model + Settings ===
+let settingsEventsBound = false;
 
-  try {
-    const res = await fetch('/api/models');
-    const data = await res.json();
-    availableModels = data.models || [];
-    selectedModel = data.selectedModel || '';
-    selectedImageAnalysisProvider = data.selectedImageAnalysisProvider || 'claude';
+function providerLabel(providerId) {
+  const labels = {
+    anthropic: 'Claude (Anthropic)',
+    openai: 'OpenAI',
+    xai: 'Grok (xAI)',
+    gemini: 'Gemini',
+    openrouter: 'OpenRouter',
+    claude: 'Claude Vision',
+    nanobanana: 'Nanobanana Vision',
+  };
+  return labels[providerId] || providerId;
+}
 
-    if (!availableModels.length) {
-      select.innerHTML = '<option value="">No models</option>';
-    } else {
-      select.innerHTML = availableModels.map(m => {
-        const safe = (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        return `<option value="${safe}">${safe}</option>`;
-      }).join('');
+function fillSelectOptions(selectEl, values = [], selectedValue = '', mapper = null) {
+  if (!selectEl) return;
+  const rows = Array.isArray(values) ? values : [];
+  selectEl.innerHTML = '';
 
-      if (selectedModel) select.value = selectedModel;
-    }
+  if (!rows.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No options';
+    selectEl.appendChild(option);
+    selectEl.value = '';
+    return;
+  }
 
-    select.onchange = async (e) => {
-      const nextModel = e.target.value;
-      if (!nextModel) return;
-      try {
-        const res = await fetch('/api/models/select', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: nextModel })
-        });
-        const payload = await res.json();
-        if (!res.ok) throw new Error(payload.error || 'Model switch failed');
-        selectedModel = payload.selectedModel || nextModel;
-        showToast(`Model set to ${selectedModel}`);
-      } catch (err) {
-        showToast('Model switch failed: ' + err.message);
-        if (selectedModel) select.value = selectedModel;
-      }
-    };
+  rows.forEach(item => {
+    const value = typeof item === 'string' ? item : item?.id;
+    if (!value) return;
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = mapper ? mapper(item) : value;
+    selectEl.appendChild(option);
+  });
 
-    if (imageSelect) {
-      const providers = data.imageAnalysisProviders || ['claude', 'nanobanana'];
-      imageSelect.innerHTML = providers.map(p => {
-        const label = p === 'claude' ? 'Claude Vision' : 'Nanobanana Vision';
-        return `<option value="${p}">${label}</option>`;
-      }).join('');
-      imageSelect.value = selectedImageAnalysisProvider;
+  const fallback = rows[0]?.id || rows[0] || '';
+  selectEl.value = selectedValue && rows.some(item => (typeof item === 'string' ? item : item?.id) === selectedValue)
+    ? selectedValue
+    : fallback;
+}
 
-      imageSelect.onchange = async (e) => {
-        const provider = e.target.value;
-        try {
-          const res = await fetch('/api/models/image-analysis/select', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider })
-          });
-          const payload = await res.json();
-          if (!res.ok) throw new Error(payload.error || 'Image analysis switch failed');
-          selectedImageAnalysisProvider = payload.selectedImageAnalysisProvider || provider;
-          showToast(`Image analysis set to ${selectedImageAnalysisProvider}`);
-        } catch (err) {
-          showToast('Image analysis switch failed: ' + err.message);
-          imageSelect.value = selectedImageAnalysisProvider;
-        }
-      };
-    }
-  } catch (err) {
-    select.innerHTML = '<option value="">Model load failed</option>';
-    if (imageSelect) imageSelect.innerHTML = '<option value="claude">Claude Vision</option>';
+function normalizeModelState(data = {}) {
+  return {
+    selectedTextProvider: data.selectedTextProvider || data.textProvider || selectedTextProvider,
+    selectedModel: data.selectedModel || data.selectedTextModel || selectedModel,
+    models: data.models || data.availableModels || [],
+    textProviders: data.textProviders || data.providers || availableTextProviders,
+    selectedImageAnalysisProvider: data.selectedImageAnalysisProvider || selectedImageAnalysisProvider,
+    imageAnalysisProviders: data.imageAnalysisProviders || ['claude', 'nanobanana'],
+  };
+}
+
+function applyModelState(rawState = {}) {
+  const state = normalizeModelState(rawState);
+  selectedTextProvider = state.selectedTextProvider || selectedTextProvider;
+  selectedModel = state.selectedModel || selectedModel;
+  selectedImageAnalysisProvider = state.selectedImageAnalysisProvider || selectedImageAnalysisProvider;
+  availableModels = Array.isArray(state.models) ? state.models : [];
+  availableTextProviders = Array.isArray(state.textProviders) ? state.textProviders : [];
+
+  const providerSelect = $('#settings-text-provider-select');
+  const modelSelect = $('#settings-text-model-select');
+  const imageAnalysisSelect = $('#settings-image-analysis-select');
+
+  if (providerSelect) {
+    fillSelectOptions(providerSelect, availableTextProviders, selectedTextProvider, (entry) => {
+      const id = typeof entry === 'string' ? entry : entry?.id;
+      const configured = typeof entry === 'string' ? false : Boolean(entry?.configured);
+      const suffix = configured ? ' ✓' : '';
+      return `${providerLabel(id)}${suffix}`;
+    });
+  }
+
+  if (modelSelect) {
+    fillSelectOptions(modelSelect, availableModels, selectedModel, (entry) => String(entry));
+  }
+
+  if (imageAnalysisSelect) {
+    fillSelectOptions(imageAnalysisSelect, state.imageAnalysisProviders, selectedImageAnalysisProvider, (entry) => providerLabel(typeof entry === 'string' ? entry : entry?.id));
   }
 }
 
-async function updateCreditsDisplay() {
-  const pill = document.getElementById('credits-pill');
-  if (!pill) return;
-  pill.textContent = 'Claude credits: checking…';
+function renderProviderKeyHints(providers = []) {
+  const hintsById = {
+    anthropic: '#settings-key-hint-anthropic',
+    openai: '#settings-key-hint-openai',
+    xai: '#settings-key-hint-xai',
+    gemini: '#settings-key-hint-gemini',
+    openrouter: '#settings-key-hint-openrouter',
+  };
+
+  Object.entries(hintsById).forEach(([providerId, selector]) => {
+    const hintEl = $(selector);
+    if (!hintEl) return;
+    const row = (providers || []).find(p => p.id === providerId);
+    if (!row) {
+      hintEl.textContent = 'Not set';
+      return;
+    }
+    hintEl.textContent = row.configured
+      ? `Configured (${row.keyHint || '••••'})`
+      : 'Not set';
+  });
+}
+
+function updateSettingsStatus(message, tone = '') {
+  const statusEl = $('#settings-save-status');
+  if (!statusEl) return;
+  statusEl.classList.remove('success', 'error');
+  if (tone === 'success') statusEl.classList.add('success');
+  if (tone === 'error') statusEl.classList.add('error');
+  statusEl.textContent = message;
+}
+
+async function loadModelState({ force = false } = {}) {
+  const endpoint = force ? '/api/models/refresh' : '/api/models';
+  const options = force
+    ? {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: selectedTextProvider }),
+    }
+    : {};
+
+  const res = await fetch(endpoint, options);
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to load model state');
+  }
+
+  applyModelState(data);
+  return data;
+}
+
+async function loadSettingsPage() {
   try {
-    const res = await fetch('/api/credits');
+    const res = await fetch('/api/settings');
     const data = await res.json();
-    pill.textContent = `Claude credits: ${data.display || 'Unavailable'}`;
+    if (!res.ok) throw new Error(data.error || 'Failed to load settings');
+
+    renderProviderKeyHints(data.providers || []);
+    applyModelState(data);
+    updateSettingsStatus('Settings loaded.');
   } catch (err) {
-    pill.textContent = 'Claude credits: unavailable';
+    updateSettingsStatus(`Failed to load settings: ${err.message}`, 'error');
   }
 }
 
-function startCreditsRefresh() {
-  if (creditsRefreshTimer) clearInterval(creditsRefreshTimer);
-  creditsRefreshTimer = setInterval(updateCreditsDisplay, 5 * 60 * 1000);
+async function saveSettings() {
+  const payload = {
+    selectedTextProvider,
+    selectedTextModel: selectedModel,
+    selectedImageAnalysisProvider,
+    keys: {},
+  };
+
+  const keyInputs = {
+    anthropic: $('#settings-key-anthropic'),
+    openai: $('#settings-key-openai'),
+    xai: $('#settings-key-xai'),
+    gemini: $('#settings-key-gemini'),
+    openrouter: $('#settings-key-openrouter'),
+  };
+
+  Object.entries(keyInputs).forEach(([provider, input]) => {
+    const value = String(input?.value || '').trim();
+    if (value) payload.keys[provider] = value;
+  });
+
+  try {
+    updateSettingsStatus('Saving settings…');
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to save settings');
+
+    applyModelState(data);
+    renderProviderKeyHints(data.providers || []);
+    Object.values(keyInputs).forEach(input => {
+      if (input) input.value = '';
+    });
+
+    updateSettingsStatus('Saved. Provider + model settings updated.', 'success');
+    showToast('Settings saved');
+  } catch (err) {
+    updateSettingsStatus(`Save failed: ${err.message}`, 'error');
+    showToast('Settings save failed: ' + err.message);
+  }
+}
+
+function bindSettingsEvents() {
+  if (settingsEventsBound) return;
+  settingsEventsBound = true;
+
+  $('#settings-refresh-models-btn')?.addEventListener('click', async () => {
+    try {
+      updateSettingsStatus('Refreshing provider models…');
+      await loadModelState({ force: true });
+      updateSettingsStatus('Model lists refreshed.', 'success');
+      showToast('Model lists refreshed');
+    } catch (err) {
+      updateSettingsStatus(`Refresh failed: ${err.message}`, 'error');
+      showToast('Refresh failed: ' + err.message);
+    }
+  });
+
+  $('#settings-save-btn')?.addEventListener('click', saveSettings);
+
+  $('#settings-text-provider-select')?.addEventListener('change', async (e) => {
+    const provider = String(e.target.value || '').trim();
+    if (!provider) return;
+    try {
+      const res = await fetch('/api/models/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Provider switch failed');
+
+      applyModelState(data);
+      updateSettingsStatus(`Active provider: ${providerLabel(selectedTextProvider)}.`, 'success');
+    } catch (err) {
+      updateSettingsStatus(`Provider switch failed: ${err.message}`, 'error');
+      showToast('Provider switch failed: ' + err.message);
+      loadSettingsPage();
+    }
+  });
+
+  $('#settings-text-model-select')?.addEventListener('change', async (e) => {
+    const model = String(e.target.value || '').trim();
+    if (!model) return;
+    try {
+      const res = await fetch('/api/models/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: selectedTextProvider, model }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Model switch failed');
+
+      applyModelState(data);
+      updateSettingsStatus(`Model set to ${selectedModel}.`, 'success');
+      showToast(`Model set to ${selectedModel}`);
+    } catch (err) {
+      updateSettingsStatus(`Model switch failed: ${err.message}`, 'error');
+      showToast('Model switch failed: ' + err.message);
+      loadSettingsPage();
+    }
+  });
+
+  $('#settings-image-analysis-select')?.addEventListener('change', async (e) => {
+    const provider = String(e.target.value || '').trim();
+    if (!provider) return;
+
+    try {
+      const res = await fetch('/api/models/image-analysis/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Image analysis switch failed');
+
+      selectedImageAnalysisProvider = data.selectedImageAnalysisProvider || provider;
+      updateSettingsStatus(`Image analysis provider set to ${providerLabel(selectedImageAnalysisProvider)}.`, 'success');
+      showToast(`Image analysis: ${providerLabel(selectedImageAnalysisProvider)}`);
+    } catch (err) {
+      updateSettingsStatus(`Image analysis switch failed: ${err.message}`, 'error');
+      showToast('Image analysis switch failed: ' + err.message);
+      loadSettingsPage();
+    }
+  });
 }
 
 // === Timing Widget ===
@@ -1759,10 +1950,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // NOTE: initEditors() is called in openVideo() after the workspace view is shown
   loadVideos();
   initResize();
-  loadModelOptions();
+  bindSettingsEvents();
+  loadModelState().catch(() => {});
   loadFindings();
-  updateCreditsDisplay();
-  startCreditsRefresh();
+  loadSettingsPage();
 
   const bind = (selector, event, handler) => {
     const el = $(selector);

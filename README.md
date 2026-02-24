@@ -8,7 +8,8 @@ Collaborative workspace for YouTube scripting, descriptions, and thumbnail itera
 - Thumbnail versioning with subversions (`2.3`, `2.4`)
 - Auto thumbnail analysis + improvement generation
 - Context usage + manual compaction controls
-- Model switching for text models (Claude)
+- Dedicated **Settings page** for provider keys + model selection
+- Dynamic text-model dropdowns (Anthropic/OpenAI/xAI/Gemini/OpenRouter)
 - Image analysis provider switch (Claude Vision / Nanobanana)
 
 ## Safe open-source setup
@@ -28,9 +29,12 @@ cp .env.example .env
 # then fill your real keys in .env (do not commit)
 ```
 
-Required secrets:
+Recommended secrets (set whichever providers you want to use):
 - `ANTHROPIC_API_KEY`
-- `OPENROUTER_API_KEY` (for Nanobanana image generation)
+- `OPENAI_API_KEY`
+- `XAI_API_KEY`
+- `GEMINI_API_KEY`
+- `OPENROUTER_API_KEY` (also used for Nanobanana image generation)
 
 ### 3) Run
 ```bash
@@ -47,6 +51,6 @@ Open: `http://localhost:3000`
 
 ## Notes
 - Thumbnail chat can auto-attach/analyze selected versions.
-- Text model dropdown switches text responses globally.
+- Use **⚙️ Settings** to manage API keys and provider/model selection.
+- Keys are written to local `.env` (ignored by git) and only masked hints are shown in UI.
 - Image generation stays on Nanobanana route.
-- Image analysis provider can be switched from top-bar dropdown.
