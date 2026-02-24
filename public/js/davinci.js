@@ -664,4 +664,4 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-console.log('✅ DaVinci Tips & Chat loaded');
+console.log('✅ Editor Tips & Chat loaded');
