@@ -18,18 +18,47 @@
 </head>
 <body>
   <div id="app">
-    <!-- Library View -->
-    <div id="library-view" class="view active">
+    <!-- Top Navigation (3 sections) -->
+    <nav class="top-nav">
+      <div class="nav-logo">
+        <h1>🌺 Nora Writer</h1>
+      </div>
+      <div class="nav-tabs">
+        <button class="nav-tab active" data-section="projects" onclick="switchSection('projects')">📹 Projects</button>
+        <button class="nav-tab" data-section="davinci-chat" onclick="switchSection('davinci-chat')">💬 DaVinci Chat</button>
+        <button class="nav-tab" data-section="tips" onclick="switchSection('tips')">📚 Tips & Tricks</button>
+      </div>
+      <div class="nav-actions">
+        <div class="top-status" title="Claude API status">
+          <span id="credits-pill" class="status-pill">Claude credits: checking…</span>
+          <label class="model-picker-inline">
+            <span>Model</span>
+            <select id="global-model-select" class="status-select model-select-inline"></select>
+          </label>
+        </div>
+        <button id="theme-toggle-nav" class="btn btn-icon" title="Toggle dark mode">🌙</button>
+      </div>
+    </nav>
+
+    <!-- Library View (Projects) -->
+    <div id="library-view" class="view section-view active" data-section="projects">
       <header class="library-header">
         <div class="header-left">
-          <h1>🌺 Nora Writer</h1>
           <p class="subtitle">Video Script Workspace</p>
         </div>
         <div class="header-right">
-          <button id="theme-toggle" class="btn btn-icon" title="Toggle dark mode">🌙</button>
           <button id="new-video-btn" class="btn btn-primary">+ New Video</button>
         </div>
       </header>
+      
+      <!-- Templates Section -->
+      <div id="templates-section" class="templates-section">
+        <div class="templates-header">
+          <h3>📋 Templates</h3>
+        </div>
+        <div id="template-chips" class="template-chips"></div>
+      </div>
+      
       <main class="library-grid" id="video-grid">
         <!-- Video cards rendered here -->
       </main>
@@ -65,6 +94,7 @@
           <div class="pane-header">
             <h3>💬 Chat with Kona</h3>
             <button class="btn btn-ghost btn-sm" id="upload-btn" title="Upload image">📎</button>
+            <button class="btn btn-ghost btn-sm" id="clear-chat-btn" onclick="clearChat()" title="Clear chat history">🗑️</button>
             <input type="file" id="file-input" accept="image/*" style="display:none">
           </div>
           <div class="chat-channel-tabs">
@@ -78,9 +108,12 @@
             </div>
           </div>
           <div id="uploaded-images" class="uploaded-images"></div>
-          <div id="token-bar" class="token-bar">
-            <div class="token-fill" id="token-fill"></div>
-            <span class="token-text" id="token-text">0 / 300K tokens</span>
+          <div class="chat-context-row">
+            <div id="token-bar" class="token-bar">
+              <div class="token-fill" id="token-fill"></div>
+              <span class="token-text" id="token-text">0 / 300K tokens</span>
+            </div>
+            <button id="compact-chat-btn" class="btn btn-ghost btn-sm" title="Compact older chat context">🧹 Compact</button>
           </div>
           <div class="chat-input-container">
             <textarea id="chat-input" placeholder="Message Kona..." rows="1"></textarea>
@@ -100,16 +133,80 @@
               <button class="tab" data-tab="description">Description</button>
               <button class="tab" data-tab="voiceover">Voiceover</button>
               <button class="tab" data-tab="thumbnails">Thumbnails</button>
+              <button class="tab" data-tab="seo">SEO</button>
+              <button class="tab" data-tab="timeline">📅 Timeline</button>
+              <button class="tab" data-tab="references">📌 Refs</button>
+            </div>
+            <div class="editor-toolbar">
+              <button id="save-snapshot-btn" class="toolbar-btn" onclick="createSnapshot()" title="Save Version">📌 Save</button>
+              <button id="snapshot-btn" class="toolbar-btn" onclick="toggleSnapshotPanel()" title="Version History">💾 History</button>
+              <button class="toolbar-btn" onclick="saveAsTemplate()" title="Save as Template">📋 Template</button>
+              <div class="export-dropdown">
+                <button class="toolbar-btn" onclick="toggleExportMenu()" title="Export">📤 Export</button>
+                <div id="export-menu" class="export-menu hidden">
+                  <button onclick="exportVideo('markdown')">📄 Markdown (.md)</button>
+                  <button onclick="exportVideo('text')">📝 Plain Text (.txt)</button>
+                  <button onclick="exportVideo('youtube')">🎬 YouTube Script</button>
+                  <button onclick="exportVideo('json')">💾 Full Backup (.json)</button>
+                  <button onclick="copyDescription()">📋 Copy Description</button>
+                </div>
+              </div>
+              <button id="preview-toggle-btn" class="toolbar-btn" onclick="toggleScriptPreview()" title="Toggle Preview">👁️ Preview</button>
             </div>
           </div>
           <div class="editor-content">
             <div class="editor-area active" id="editor-script">
-              <div id="script-editor" class="cm-editor-wrap" data-placeholder="# Opening Hook&#10;&#10;Start writing your script here...&#10;&#10;# Main Content&#10;&#10;# Outro"></div>
+              <div class="editor-script-container">
+                <div id="section-outline" class="section-outline">
+                  <div class="outline-header">
+                    <span>Sections</span>
+                    <button onclick="toggleOutline()" class="outline-toggle">◀</button>
+                  </div>
+                  <div id="outline-list" class="outline-list"></div>
+                </div>
+                <div class="script-editor-wrapper">
+                  <div id="script-editor" class="cm-editor-wrap" data-placeholder="# Opening Hook&#10;&#10;Start writing your script here...&#10;&#10;# Main Content&#10;&#10;# Outro"></div>
+                  <div id="script-preview" class="script-preview hidden"></div>
+                  <div id="suggestion-overlay" class="suggestion-overlay hidden">
+                    <div class="suggestion-overlay-header">
+                      <span class="suggestion-overlay-title">💡 Suggested Change</span>
+                      <span class="suggestion-overlay-section" id="suggestion-section"></span>
+                      <button class="suggestion-close" onclick="closeSuggestionOverlay()">✕</button>
+                    </div>
+                    <div class="suggestion-diff-view">
+                      <!-- Populated dynamically with context + diff -->
+                    </div>
+                    <div class="suggestion-overlay-actions">
+                      <button class="btn btn-success" id="suggestion-accept-btn">✓ Accept Change</button>
+                      <button class="btn btn-ghost" id="suggestion-reject-btn">✕ Dismiss</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div id="timing-widget" class="timing-widget">
+                <span id="word-count">0 words</span>
+                <span class="timing-sep">•</span>
+                <span id="char-count">0 chars</span>
+                <span class="timing-sep">•</span>
+                <span id="duration-estimate">~0:00</span>
+                <span class="timing-sep">•</span>
+                <span class="wpm-control">
+                  <label>WPM:</label>
+                  <input type="number" id="wpm-input" value="150" min="80" max="250" step="10">
+                </span>
+              </div>
+              <div id="section-timing" class="section-timing"></div>
             </div>
             <div class="editor-area" id="editor-description">
               <div id="description-editor" class="cm-editor-wrap" data-placeholder="Video description for YouTube..."></div>
             </div>
             <div class="editor-area" id="editor-voiceover">
+              <div class="voiceover-toolbar">
+                <button class="toolbar-btn" onclick="previewVoiceover()" id="tts-btn">🔊 Preview Voiceover</button>
+                <button class="toolbar-btn" onclick="previewSelection()" id="tts-selection-btn">🎯 Preview Selection</button>
+                <span id="tts-status" class="tts-status"></span>
+              </div>
+              <audio id="tts-player" controls class="tts-player hidden"></audio>
               <div id="voiceover-editor" class="cm-editor-wrap" data-placeholder="Voiceover notes, tone directions, timing cues..."></div>
             </div>
             <div class="editor-area" id="editor-thumbnails">
@@ -130,7 +227,98 @@
                 </div>
               </div>
             </div>
+            <div class="editor-area" id="editor-seo">
+              <div class="seo-panel">
+                <div class="seo-score" id="seo-score">
+                  <div class="score-circle" id="score-circle">--</div>
+                  <span>SEO Score</span>
+                </div>
+                <div class="seo-checks" id="seo-checks"></div>
+                <div class="seo-suggestions">
+                  <h4>Title Variants</h4>
+                  <div id="title-variants"></div>
+                  <button class="toolbar-btn" onclick="generateTitleVariants()">✨ Generate Title Ideas</button>
+                </div>
+                <div class="seo-tags">
+                  <h4>Suggested Tags</h4>
+                  <div id="tag-suggestions"></div>
+                  <button class="toolbar-btn" onclick="generateTags()">🏷️ Generate Tags</button>
+                </div>
+                <div class="seo-description-analysis">
+                  <h4>Description Analysis</h4>
+                  <div id="desc-analysis"></div>
+                </div>
+              </div>
+            </div>
+            <div id="editor-timeline" class="editor-area">
+              <div class="timeline-panel" id="timeline-panel"></div>
+            </div>
+            <div id="editor-references" class="editor-area">
+              <div class="ref-board">
+                <div class="ref-toolbar">
+                  <button class="toolbar-btn" onclick="addRefImage()">🖼️ Image</button>
+                  <button class="toolbar-btn" onclick="addRefLink()">🔗 Link</button>
+                  <button class="toolbar-btn" onclick="addRefNote()">📝 Note</button>
+                  <input type="file" id="ref-file-input" accept="image/*" hidden>
+                </div>
+                <div id="ref-grid" class="ref-grid"></div>
+              </div>
+            </div>
           </div>
+          
+          <!-- Snapshot Panel -->
+          <div id="snapshot-panel" class="snapshot-panel hidden">
+            <div class="snapshot-header">
+              <h3>Version History</h3>
+              <button onclick="toggleSnapshotPanel()" class="btn-close">✕</button>
+            </div>
+            <div id="snapshot-list" class="snapshot-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DaVinci Chat View -->
+    <div id="davinci-chat-view" class="view section-view" data-section="davinci-chat">
+      <div class="davinci-chat-container">
+        <div class="davinci-header">
+          <div>
+            <h2>💬 DaVinci Chat</h2>
+            <p class="subtitle">Ask Kona about DaVinci Resolve Studio 20</p>
+          </div>
+          <div class="davinci-actions">
+            <div class="token-bar davinci-token-bar" id="davinci-token-bar">
+              <div class="token-fill" id="davinci-token-fill"></div>
+              <span class="token-text" id="davinci-token-text">0 / 180K tokens</span>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="davinci-compact-btn" title="Compact older DaVinci chat context">🧹 Compact</button>
+            <button class="btn btn-ghost" onclick="clearDavinciChat()">🗑️ New Chat</button>
+          </div>
+        </div>
+        <div class="davinci-chat-messages" id="davinci-chat-messages">
+          <div class="chat-welcome">
+            <p>🌺 <strong>Hey Nora!</strong> Ask me anything about DaVinci Resolve. I've got your tips doc loaded, so I know what you already know.</p>
+          </div>
+        </div>
+        <div class="davinci-chat-input">
+          <textarea id="davinci-input" placeholder="Ask about DaVinci Resolve..." rows="1"></textarea>
+          <button id="davinci-send-btn" class="btn btn-primary btn-send">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tips & Tricks View -->
+    <div id="tips-view" class="view section-view" data-section="tips">
+      <div class="tips-container">
+        <div class="tips-header">
+          <h2>📚 DaVinci Resolve Tips & Tricks</h2>
+          <div class="tips-actions">
+            <input type="text" id="tips-search" placeholder="🔍 Search tips..." class="tips-search">
+            <button class="btn btn-primary" onclick="addNewSection()">+ Add Section</button>
+          </div>
+        </div>
+        <div class="tips-content" id="tips-content">
+          <!-- Tips sections rendered here -->
         </div>
       </div>
     </div>
@@ -141,6 +329,12 @@
     <div class="modal">
       <h2>New Video Project</h2>
       <input id="new-video-title" class="modal-input" placeholder="Video title..." autofocus />
+      <div id="template-select" class="template-select">
+        <label>Start from template:</label>
+        <select id="template-picker">
+          <option value="">Blank</option>
+        </select>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
         <button class="btn btn-primary" onclick="confirmNewVideo()">Create</button>
@@ -166,5 +360,10 @@
   </div>
 
   <script src="/js/app.js"></script>
+  <script src="/js/davinci.js"></script>
+  <script>
+    // Wire up theme toggle for nav
+    document.getElementById('theme-toggle-nav')?.addEventListener('click', toggleTheme);
+  </script>
 </body>
 </html>

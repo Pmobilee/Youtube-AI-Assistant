@@ -6,6 +6,9 @@ let editors = {};
 let currentChatChannel = 'script';
 let pendingSuggestions = [];
 let activeSuggestionIdx = null;
+let availableModels = [];
+let selectedModel = '';
+let creditsRefreshTimer = null;
 
 // === DOM refs ===
 const $ = (sel) => document.querySelector(sel);
@@ -32,6 +35,7 @@ function updateThemeButtons() {
   const icon = isDark ? '☀️' : '🌙';
   if ($('#theme-toggle')) $('#theme-toggle').textContent = icon;
   if ($('#theme-toggle-ws')) $('#theme-toggle-ws').textContent = icon;
+  if ($('#theme-toggle-nav')) $('#theme-toggle-nav').textContent = icon;
 }
 
 function initEditors() {
@@ -66,6 +70,69 @@ function updateEditorThemes() {
   Object.values(editors).forEach(ed => {
     if (ed && ed.setOption) ed.setOption('theme', theme);
   });
+}
+
+// === Global Model + Credits ===
+async function loadModelOptions() {
+  const select = document.getElementById('global-model-select');
+  if (!select) return;
+  try {
+    const res = await fetch('/api/models');
+    const data = await res.json();
+    availableModels = data.models || [];
+    selectedModel = data.selectedModel || '';
+
+    if (!availableModels.length) {
+      select.innerHTML = '<option value="">No models</option>';
+      return;
+    }
+
+    select.innerHTML = availableModels.map(m => {
+      const safe = (m || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<option value="${safe}">${safe}</option>`;
+    }).join('');
+
+    if (selectedModel) select.value = selectedModel;
+
+    select.onchange = async (e) => {
+      const nextModel = e.target.value;
+      if (!nextModel) return;
+      try {
+        const res = await fetch('/api/models/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: nextModel })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Model switch failed');
+        selectedModel = data.selectedModel || nextModel;
+        showToast(`Model set to ${selectedModel}`);
+      } catch (err) {
+        showToast('Model switch failed: ' + err.message);
+        if (selectedModel) select.value = selectedModel;
+      }
+    };
+  } catch (err) {
+    select.innerHTML = '<option value="">Model load failed</option>';
+  }
+}
+
+async function updateCreditsDisplay() {
+  const pill = document.getElementById('credits-pill');
+  if (!pill) return;
+  pill.textContent = 'Claude credits: checking…';
+  try {
+    const res = await fetch('/api/credits');
+    const data = await res.json();
+    pill.textContent = `Claude credits: ${data.display || 'Unavailable'}`;
+  } catch (err) {
+    pill.textContent = 'Claude credits: unavailable';
+  }
+}
+
+function startCreditsRefresh() {
+  if (creditsRefreshTimer) clearInterval(creditsRefreshTimer);
+  creditsRefreshTimer = setInterval(updateCreditsDisplay, 5 * 60 * 1000);
 }
 
 // === Timing Widget ===
@@ -447,6 +514,7 @@ async function switchChatChannel(channel) {
   // Load messages for this channel
   if (currentVideo) {
     await loadChannelMessages(currentVideo.id, channel);
+    updateTokenBar();
   }
 }
 
@@ -974,6 +1042,28 @@ async function updateTokenBar() {
   }
 }
 
+async function compactCurrentChat() {
+  if (!currentVideo || isStreaming) return;
+  const btn = document.getElementById('compact-chat-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Compacting…'; }
+
+  try {
+    const res = await fetch(`/api/videos/${currentVideo.id}/compact`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelType: currentChatChannel, keepRecent: 12 })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Compaction failed');
+    showToast(`Compacted ${data.prunedCount || 0} messages`);
+    await updateTokenBar();
+  } catch (err) {
+    showToast('Compaction failed: ' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🧹 Compact'; }
+  }
+}
+
 // === Section Scrolling ===
 function scrollToSection(sectionName) {
   const normalizedSearch = sectionName.toLowerCase().trim();
@@ -1346,6 +1436,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // NOTE: initEditors() is called in openVideo() after the workspace view is shown
   loadVideos();
   initResize();
+  loadModelOptions();
+  updateCreditsDisplay();
+  startCreditsRefresh();
 
   const bind = (selector, event, handler) => {
     const el = $(selector);
@@ -1367,9 +1460,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Theme toggle
   bind('#theme-toggle', 'click', toggleTheme);
   bind('#theme-toggle-ws', 'click', toggleTheme);
+  bind('#theme-toggle-nav', 'click', toggleTheme);
 
   // Chat send
   bind('#send-btn', 'click', sendMessage);
+  bind('#compact-chat-btn', 'click', compactCurrentChat);
   const chatInput = bind('#chat-input', 'keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();

@@ -4,9 +4,10 @@ const fs = require('fs');
 const multer = require('multer');
 const Database = require('better-sqlite3');
 const OpenAI = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 // Native fetch for Node 18+ (fallback for older versions)
 const fetch = globalThis.fetch || require('node-fetch');
-const { execSync } = require('child_process');
+// child_process kept intentionally unused
 
 const app = express();
 const PORT = 3000;
@@ -147,6 +148,40 @@ try {
   // Column already exists, that's fine
 }
 
+// DaVinci assistant tables (safe create)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS davinci_tips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id INTEGER,
+    title TEXT NOT NULL,
+    content TEXT DEFAULT '',
+    level INTEGER DEFAULT 0,
+    position INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_id) REFERENCES davinci_tips(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS davinci_chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS davinci_chat_memory (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    summary TEXT DEFAULT '',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+try {
+  db.prepare('INSERT OR IGNORE INTO davinci_chat_memory (id, summary) VALUES (1, ?)').run('');
+} catch (e) {
+  console.warn('davinci_chat_memory init warning:', e.message);
+}
+
 // Seed default templates if none exist
 const templateCount = db.prepare('SELECT COUNT(*) as c FROM templates').get().c;
 if (templateCount === 0) {
@@ -202,15 +237,59 @@ if (!fs.existsSync(globalMemoryPath)) {
   }, null, 2));
 }
 
-// --- Model client: Codex via local proxy (ChatGPT Pro subscription, zero cost) ---
-const codexModel = process.env.NORA_WRITER_MODEL || 'codex';
-const codexFallbackModel = process.env.NORA_WRITER_FALLBACK_MODEL || 'mini';
-const codexClient = new OpenAI({
-  apiKey: 'not-needed',
-  baseURL: 'http://localhost:8086/v1'
-});
+// --- Model clients: Claude everywhere, OpenRouter only for image tasks ---
+const runtimeSettingsPath = path.join(dataDir, 'runtime_settings.json');
 
-console.log('✓ Nora Writer configured for ChatGPT Pro via localhost:8086 (zero additional cost)');
+const textModelOptions = (process.env.NORA_WRITER_MODEL_OPTIONS || 'claude-3-7-sonnet-latest,claude-sonnet-4-5-20250929,claude-opus-4-1-20250805')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+function loadRuntimeSettings() {
+  try {
+    if (fs.existsSync(runtimeSettingsPath)) {
+      return JSON.parse(fs.readFileSync(runtimeSettingsPath, 'utf-8')) || {};
+    }
+  } catch (err) {
+    console.warn('Could not load runtime settings:', err.message);
+  }
+  return {};
+}
+
+function saveRuntimeSettings(next) {
+  try {
+    fs.writeFileSync(runtimeSettingsPath, JSON.stringify(next, null, 2));
+  } catch (err) {
+    console.warn('Could not save runtime settings:', err.message);
+  }
+}
+
+const runtimeSettings = loadRuntimeSettings();
+let selectedTextModel = runtimeSettings.selectedTextModel || process.env.NORA_WRITER_MODEL || textModelOptions[0];
+if (!textModelOptions.includes(selectedTextModel)) {
+  selectedTextModel = textModelOptions[0];
+}
+
+const anthropicApiKey = process.env.ANTHROPIC_API_KEY || '';
+const anthropicClient = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
+
+const openRouterApiKey = process.env.OPENROUTER_API_KEY || '';
+const openRouterBaseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+const openRouterClient = openRouterApiKey
+  ? new OpenAI({ apiKey: openRouterApiKey, baseURL: openRouterBaseUrl })
+  : null;
+
+const imageModelCandidates = (
+  process.env.NORA_WRITER_IMAGE_MODELS ||
+  process.env.NORA_WRITER_VISION_MODEL ||
+  'google/gemini-2.5-pro,google/gemini-2.5-flash-image-preview,google/gemini-2.5-flash'
+)
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+console.log(`✓ Nora Writer text provider: Anthropic | model=${selectedTextModel}`);
+console.log(`✓ Nora Writer image provider: OpenRouter | models=${imageModelCandidates.join(', ')}`);
 
 function toOpenAIMessages(systemPrompt, apiMessages) {
   const normalized = (apiMessages || []).map(m => {
@@ -229,62 +308,81 @@ function toOpenAIMessages(systemPrompt, apiMessages) {
   return [{ role: 'system', content: systemPrompt }, ...normalized];
 }
 
-function flattenMessagesForCli(systemPrompt, apiMessages) {
-  const lines = [`System: ${systemPrompt}`, ''];
-  for (const m of apiMessages || []) {
-    let content = m.content || '';
-    if (Array.isArray(content)) {
-      content = content
-        .map(p => (p?.type === 'text' ? p.text : '[image omitted]'))
-        .filter(Boolean)
-        .join('\n');
+function toAnthropicMessages(apiMessages) {
+  return (apiMessages || []).map(m => {
+    const role = m.role === 'assistant' ? 'assistant' : 'user';
+    if (!Array.isArray(m.content)) {
+      return { role, content: m.content || '' };
     }
-    if (!content) continue;
-    lines.push(`${m.role === 'assistant' ? 'Assistant' : 'User'}: ${content}`);
-    lines.push('');
-  }
-  lines.push('Respond to the latest user message. Keep it concise and practical.');
-  return lines.join('\n');
+
+    const parts = m.content.map(part => {
+      if (part?.type === 'image' && part?.source?.url) {
+        return {
+          type: 'image',
+          source: {
+            type: 'url',
+            url: part.source.url
+          }
+        };
+      }
+      return { type: 'text', text: part?.text || '' };
+    });
+
+    return { role, content: parts.length ? parts : [{ type: 'text', text: '' }] };
+  });
 }
 
-function runCodexCliFallback(systemPrompt, apiMessages) {
-  const prompt = flattenMessagesForCli(systemPrompt, apiMessages);
-  const outPath = path.join(dataDir, `codex-last-${Date.now()}.txt`);
-  const cmd = [
-    'codex exec',
-    '--skip-git-repo-check',
-    '--sandbox read-only',
-    '-o', JSON.stringify(outPath),
-    JSON.stringify(prompt)
-  ].join(' ');
+function hasImageContent(apiMessages) {
+  return (apiMessages || []).some(m =>
+    Array.isArray(m.content) && m.content.some(part => part?.type === 'image' && part?.source?.url)
+  );
+}
 
-  execSync(cmd, {
-    cwd: __dirname,
-    stdio: 'ignore',
-    timeout: 180000,
-    maxBuffer: 10 * 1024 * 1024,
+async function streamAnthropicTextResponse({ systemPrompt, apiMessages, onText, model }) {
+  if (!anthropicClient) {
+    throw new Error('ANTHROPIC_API_KEY is missing.');
+  }
+
+  const stream = anthropicClient.messages.stream({
+    model,
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: toAnthropicMessages(apiMessages)
   });
 
-  const text = fs.existsSync(outPath) ? fs.readFileSync(outPath, 'utf-8') : '';
-  try { fs.unlinkSync(outPath); } catch {}
-  return text.trim();
-}
+  let full = '';
+  stream.on('text', (text) => {
+    full += text;
+    if (onText) onText(text);
+  });
 
-async function generateResponse({ systemPrompt, apiMessages, onText }) {
-  if (!codexClient) {
-    throw new Error('No codex client configured.');
+  const finalMessage = await stream.finalMessage();
+  if (!full.trim()) {
+    const fallbackText = (finalMessage?.content || [])
+      .filter(block => block?.type === 'text')
+      .map(block => block.text)
+      .join('');
+    if (fallbackText) {
+      full = fallbackText;
+      if (onText) onText(fallbackText);
+    }
   }
 
-  const modelsToTry = [codexModel, codexFallbackModel].filter(Boolean);
-  let lastErr;
+  return full;
+}
 
-  for (const model of modelsToTry) {
+async function streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText }) {
+  if (!openRouterClient) {
+    throw new Error('OPENROUTER_API_KEY is missing for image analysis/generation.');
+  }
+
+  let lastErr = null;
+  for (const model of imageModelCandidates) {
     try {
-      const stream = await codexClient.chat.completions.create({
+      const stream = await openRouterClient.chat.completions.create({
         model,
-        reasoning_effort: 'medium',
-        max_completion_tokens: 4096,
         stream: true,
+        max_completion_tokens: 4096,
         messages: toOpenAIMessages(systemPrompt, apiMessages)
       });
 
@@ -297,67 +395,50 @@ async function generateResponse({ systemPrompt, apiMessages, onText }) {
         }
       }
 
-      if (full.trim()) {
-        return full;
-      }
-
-      console.warn(`Model ${model} returned empty output; trying next/fallback path.`);
+      if (full.trim()) return full;
+      throw new Error(`OpenRouter model ${model} returned empty output.`);
     } catch (err) {
       lastErr = err;
-      console.warn(`Model ${model} failed, trying fallback if available:`, err.message);
+      console.warn(`OpenRouter image model ${model} failed:`, err.message);
     }
   }
 
-  // Last resort: call Codex CLI directly (OAuth-backed, no API key needed)
-  try {
-    const cliText = runCodexCliFallback(systemPrompt, apiMessages);
-    if (cliText && onText) onText(cliText);
-    if (cliText) return cliText;
-  } catch (err) {
-    lastErr = err;
-    console.warn('Codex CLI fallback failed:', err.message);
+  throw lastErr || new Error('All configured OpenRouter image models failed.');
+}
+
+async function generateResponse({ systemPrompt, apiMessages, onText }) {
+  const useImageRoute = hasImageContent(apiMessages);
+
+  if (useImageRoute) {
+    return streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText });
   }
 
-  throw lastErr || new Error('All configured models failed.');
+  return streamAnthropicTextResponse({
+    systemPrompt,
+    apiMessages,
+    onText,
+    model: selectedTextModel
+  });
 }
 
 async function summarizeWithModel({ systemPrompt, userPrompt }) {
-  if (!codexClient) {
-    throw new Error('No codex client configured for summarization.');
+  if (!anthropicClient) {
+    throw new Error('ANTHROPIC_API_KEY is missing.');
   }
 
-  const modelsToTry = [codexModel, codexFallbackModel].filter(Boolean);
-  let lastErr;
+  const result = await anthropicClient.messages.create({
+    model: selectedTextModel,
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userPrompt }]
+  });
 
-  for (const model of modelsToTry) {
-    try {
-      const result = await codexClient.chat.completions.create({
-        model,
-        reasoning_effort: 'medium',
-        max_completion_tokens: 1024,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ]
-      });
-      const text = result?.choices?.[0]?.message?.content || '';
-      if (text.trim()) return text;
-      console.warn(`Summarization model ${model} returned empty output.`);
-    } catch (err) {
-      lastErr = err;
-      console.warn(`Summarization model ${model} failed, trying fallback if available:`, err.message);
-    }
-  }
+  const text = (result?.content || [])
+    .filter(block => block?.type === 'text')
+    .map(block => block.text)
+    .join('');
 
-  try {
-    const cliText = runCodexCliFallback(systemPrompt, [{ role: 'user', content: userPrompt }]);
-    if (cliText) return cliText;
-  } catch (err) {
-    lastErr = err;
-    console.warn('Summarization Codex CLI fallback failed:', err.message);
-  }
-
-  throw lastErr || new Error('All summarization models failed.');
+  return text || '';
 }
 
 // --- Load Kona's personality files for true integration ---
@@ -432,7 +513,145 @@ function getVideoTokenCount(videoId) {
   return total;
 }
 
+function getDavinciTokenCount() {
+  const messages = db.prepare('SELECT content FROM davinci_chat_messages ORDER BY created_at ASC').all();
+  const memory = db.prepare('SELECT summary FROM davinci_chat_memory WHERE id = 1').get();
+  let total = 0;
+  messages.forEach(m => total += estimateTokens(m.content));
+  if (memory?.summary) total += estimateTokens(memory.summary);
+  return total;
+}
+
+async function compactVideoContext(videoId, channelType = null, keepRecent = 12) {
+  const keep = Math.max(6, Number(keepRecent) || 12);
+  let prunedCount = 0;
+  const summaryChunks = [];
+
+  const compactLegacy = () => {
+    const rows = db.prepare('SELECT id, role, content FROM messages WHERE video_id = ? ORDER BY created_at ASC').all(videoId);
+    if (rows.length <= keep) return;
+    const older = rows.slice(0, rows.length - keep);
+    const ids = older.map(r => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+    db.prepare(`DELETE FROM messages WHERE id IN (${placeholders})`).run(...ids);
+    prunedCount += older.length;
+    summaryChunks.push('[legacy]\n' + older.map(r => `${r.role}: ${r.content}`).join('\n'));
+  };
+
+  const compactChannel = (channel) => {
+    const rows = db.prepare('SELECT id, role, content FROM channel_messages WHERE video_id = ? AND channel_type = ? ORDER BY created_at ASC').all(videoId, channel);
+    if (rows.length <= keep) return;
+    const older = rows.slice(0, rows.length - keep);
+    const ids = older.map(r => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+    db.prepare(`DELETE FROM channel_messages WHERE id IN (${placeholders})`).run(...ids);
+    prunedCount += older.length;
+    summaryChunks.push(`[${channel}]\n` + older.map(r => `${r.role}: ${r.content}`).join('\n'));
+  };
+
+  if (channelType) {
+    compactChannel(channelType);
+  } else {
+    compactLegacy();
+    ['script', 'description', 'thumbnail'].forEach(compactChannel);
+  }
+
+  let memoryUpdated = false;
+  if (summaryChunks.length > 0) {
+    const memory = db.prepare('SELECT summary FROM video_memory WHERE video_id = ?').get(videoId);
+    const summaryPrompt = summaryChunks.join('\n\n');
+    const compactSummary = await summarizeWithModel({
+      systemPrompt: 'Summarize this conversation context into concise durable notes for future writing. Keep concrete decisions, style/tone guidance, constraints, and open threads.',
+      userPrompt: summaryPrompt
+    });
+
+    const stamped = `[Manual compact ${new Date().toISOString()}]\n${compactSummary}`.trim();
+    const merged = [memory?.summary || '', stamped].filter(Boolean).join('\n\n');
+
+    db.prepare('INSERT INTO video_memory (video_id, summary, token_count, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(video_id) DO UPDATE SET summary = excluded.summary, token_count = excluded.token_count, updated_at = CURRENT_TIMESTAMP')
+      .run(videoId, merged, getVideoTokenCount(videoId));
+    memoryUpdated = true;
+  }
+
+  const newTokens = getVideoTokenCount(videoId);
+  db.prepare('UPDATE video_memory SET token_count = ?, updated_at = CURRENT_TIMESTAMP WHERE video_id = ?')
+    .run(newTokens, videoId);
+
+  return { prunedCount, newTokens, memoryUpdated };
+}
+
+async function compactDavinciContext(keepRecent = 20) {
+  const keep = Math.max(8, Number(keepRecent) || 20);
+  const rows = db.prepare('SELECT id, role, content FROM davinci_chat_messages ORDER BY created_at ASC').all();
+  if (rows.length <= keep) {
+    return { prunedCount: 0, newTokens: getDavinciTokenCount(), memoryUpdated: false };
+  }
+
+  const older = rows.slice(0, rows.length - keep);
+  const ids = older.map(r => r.id);
+  const placeholders = ids.map(() => '?').join(',');
+
+  const compactSummary = await summarizeWithModel({
+    systemPrompt: 'Summarize this DaVinci support chat into concise reusable guidance. Keep exact workflows, button paths, caveats, and troubleshooting steps.',
+    userPrompt: older.map(r => `${r.role}: ${r.content}`).join('\n')
+  });
+
+  db.prepare(`DELETE FROM davinci_chat_messages WHERE id IN (${placeholders})`).run(...ids);
+
+  const existing = db.prepare('SELECT summary FROM davinci_chat_memory WHERE id = 1').get();
+  const merged = [existing?.summary || '', `[Manual compact ${new Date().toISOString()}]\n${compactSummary}`]
+    .filter(Boolean)
+    .join('\n\n');
+
+  db.prepare('INSERT INTO davinci_chat_memory (id, summary, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET summary = excluded.summary, updated_at = CURRENT_TIMESTAMP')
+    .run(merged);
+
+  return { prunedCount: older.length, newTokens: getDavinciTokenCount(), memoryUpdated: true };
+}
+
 // ============ API ROUTES ============
+
+app.get('/api/models', (req, res) => {
+  res.json({
+    provider: 'anthropic',
+    selectedModel: selectedTextModel,
+    models: textModelOptions,
+    imageProvider: 'openrouter',
+    imageModels: imageModelCandidates,
+  });
+});
+
+app.post('/api/models/select', (req, res) => {
+  const { model } = req.body || {};
+  if (!model || !textModelOptions.includes(model)) {
+    return res.status(400).json({
+      error: 'Invalid model selection',
+      models: textModelOptions,
+      selectedModel: selectedTextModel,
+    });
+  }
+
+  selectedTextModel = model;
+  runtimeSettings.selectedTextModel = selectedTextModel;
+  saveRuntimeSettings(runtimeSettings);
+
+  res.json({ success: true, selectedModel: selectedTextModel });
+});
+
+app.get('/api/credits', (req, res) => {
+  // Anthropic standard API keys do not currently expose prepaid remaining balance directly.
+  // Allow manual display override if owner wants to set one.
+  const manual = process.env.NORA_WRITER_CLAUDE_CREDITS_DISPLAY || '';
+  if (manual) {
+    return res.json({ available: true, display: manual, source: 'manual' });
+  }
+
+  return res.json({
+    available: false,
+    display: 'Unavailable via standard Claude API key',
+    source: 'anthropic-api-limit',
+  });
+});
 
 // --- Videos ---
 app.get('/api/videos', (req, res) => {
@@ -522,6 +741,17 @@ app.get('/api/videos/:videoId/tokens', (req, res) => {
     warning: count > 250000, 
     critical: count > 280000 
   });
+});
+
+app.post('/api/videos/:videoId/compact', async (req, res) => {
+  try {
+    const { channelType = null, keepRecent = 12 } = req.body || {};
+    const result = await compactVideoContext(req.params.videoId, channelType, keepRecent);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('Manual compact failed:', err);
+    res.status(500).json({ error: err.message || 'Compaction failed' });
+  }
 });
 
 // --- Version History / Snapshots ---
@@ -652,7 +882,7 @@ app.post('/api/videos/:videoId/chat', async (req, res) => {
     });
 
     let fullResponse = await generateResponse({
-      systemPrompt: `You are Kona Writer, a codex-powered scriptwriting assistant.\n\n${systemPrompt}`,
+      systemPrompt: `You are Kona Writer, a Claude-powered scriptwriting assistant.\n\n${systemPrompt}`,
       apiMessages,
       onText: (text) => {
         res.write(`data: ${JSON.stringify({ type: 'text', content: text })}\n\n`);
@@ -773,7 +1003,7 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
     });
 
     let fullResponse = await generateResponse({
-      systemPrompt: `You are Kona Writer, a codex-powered scriptwriting assistant.\n\n${systemPrompt}`,
+      systemPrompt: `You are Kona Writer, a Claude-powered scriptwriting assistant.\n\n${systemPrompt}`,
       apiMessages,
       onText: (text) => {
         res.write(`data: ${JSON.stringify({ type: 'text', content: text })}\n\n`);
@@ -1196,6 +1426,29 @@ app.delete('/api/davinci/chat/messages', (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/api/davinci/chat/tokens', (req, res) => {
+  const count = getDavinciTokenCount();
+  const max = 180000;
+  res.json({
+    tokens: count,
+    max,
+    percentage: Math.round((count / max) * 100),
+    warning: count > 140000,
+    critical: count > 165000,
+  });
+});
+
+app.post('/api/davinci/chat/compact', async (req, res) => {
+  try {
+    const { keepRecent = 20 } = req.body || {};
+    const result = await compactDavinciContext(keepRecent);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('DaVinci compact failed:', err);
+    res.status(500).json({ error: err.message || 'Compaction failed' });
+  }
+});
+
 app.post('/api/davinci/chat', async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: 'Message required' });
@@ -1230,7 +1483,7 @@ app.post('/api/davinci/chat', async (req, res) => {
   const kona = loadKonaContext();
   
   // Build system prompt
-  const systemPrompt = `You are Kona Writer, a codex-powered scriptwriting assistant.
+  const systemPrompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
 You ARE Kona 🌺 — Damion and Nora's AI partner. You have your own personality and voice.
 
@@ -1318,7 +1571,7 @@ app.get('*', (req, res) => {
 function buildSystemPrompt(video, memory, globalMemory) {
   const kona = loadKonaContext();
 
-  let prompt = `You are Kona Writer, a codex-powered scriptwriting assistant.
+  let prompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
 You ARE Kona 🌺 — not a generic AI, but the same Kona that runs Damion and Nora's life infrastructure. You have your own personality, opinions, and voice.
 
@@ -1448,7 +1701,7 @@ async function summarizeConversation(videoId, messages, memory) {
 
   try {
     const summary = await summarizeWithModel({
-      systemPrompt: 'You are Kona Writer, a codex-powered scriptwriting assistant. Summarize this conversation between Nora (user) and Kona (assistant) about video production. Capture key decisions, creative direction, and important context. Be concise but thorough.',
+      systemPrompt: 'You are Kona Writer, a Claude-powered scriptwriting assistant. Summarize this conversation between Nora (user) and Kona (assistant) about video production. Capture key decisions, creative direction, and important context. Be concise but thorough.',
       userPrompt: `${existingSummary ? `Previous summary:\n${existingSummary}\n\n` : ''}New conversation to summarize:\n${conversationText}`
     });
 
