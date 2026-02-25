@@ -344,7 +344,10 @@ function applyModelState(rawState = {}) {
   if (imageAnalysisSelect) {
     fillSelectOptions(imageAnalysisSelect, state.imageAnalysisProviders, selectedImageAnalysisProvider, (entry) => {
       const id = typeof entry === 'string' ? entry : entry?.id;
-      return `${providerLabel(id)} · ${providerKeyName(id)}`;
+      const label = id === 'openrouter'
+        ? 'OpenRouter Vision (analysis)'
+        : providerLabel(id);
+      return `${label} · ${providerKeyName(id)}`;
     });
   }
 
@@ -355,7 +358,12 @@ function applyModelState(rawState = {}) {
   if (imageGenerationSelect) {
     fillSelectOptions(imageGenerationSelect, state.imageGenerationProviders || [], selectedImageGenerationProvider, (entry) => {
       const id = typeof entry === 'string' ? entry : entry?.id;
-      return `${providerLabel(id)} · ${providerKeyName(id)}`;
+      const label = id === 'nanobanana'
+        ? 'Nanobanana (OpenRouter Images API · stable)'
+        : (id === 'openrouter'
+          ? 'OpenRouter Image (all output-image models · experimental)'
+          : providerLabel(id));
+      return `${label} · ${providerKeyName(id)}`;
     });
   }
 

@@ -869,14 +869,15 @@ const imageAnalysisProviderCatalog = [
 ];
 
 const imageGenerationProviderCatalog = [
-  { id: 'nanobanana', label: 'Nanobanana (OpenRouter)', requiresProvider: 'openrouter' },
+  { id: 'nanobanana', label: 'Nanobanana (OpenRouter Images API · stable)', requiresProvider: 'openrouter' },
   { id: 'grok-vision', label: 'Grok Vision (xAI)', requiresProvider: 'xai' },
   { id: 'gemini', label: 'Gemini Image', requiresProvider: 'gemini' },
-  { id: 'openrouter', label: 'OpenRouter Image', requiresProvider: 'openrouter' },
+  { id: 'openrouter', label: 'OpenRouter Image (all output-image models · experimental)', requiresProvider: 'openrouter' },
 ];
 
 let openRouterAnalysisModels = [...openRouterImageModelCandidates];
-let openRouterGenerationModels = [...openRouterGenerationFallbackCandidates];
+let openRouterGenerationModelsStrict = [...openRouterGenerationFallbackCandidates];
+let openRouterGenerationModelsAll = [...openRouterGenerationFallbackCandidates];
 
 function imageProviderLabel(providerId) {
   const all = [...imageAnalysisProviderCatalog, ...imageGenerationProviderCatalog];
@@ -909,7 +910,10 @@ function getImageGenerationModels(provider = 'nanobanana') {
   if (!normalized) return [];
   if (normalized === 'grok-vision') return alphaSortStrings(xaiImageModelCandidates);
   if (normalized === 'gemini') return alphaSortStrings(geminiImageModelCandidates);
-  return alphaSortStrings(openRouterGenerationModels.length ? openRouterGenerationModels : openRouterGenerationFallbackCandidates);
+  if (normalized === 'openrouter') {
+    return alphaSortStrings(openRouterGenerationModelsAll.length ? openRouterGenerationModelsAll : openRouterGenerationFallbackCandidates);
+  }
+  return alphaSortStrings(openRouterGenerationModelsStrict.length ? openRouterGenerationModelsStrict : openRouterGenerationFallbackCandidates);
 }
 
 function getAvailableImageAnalysisProviders() {
@@ -1020,7 +1024,7 @@ const modelCache = {
 };
 
 const imageModelCache = {
-  openrouter: { analysisModels: [], generationModels: [], fetchedAt: 0 },
+  openrouter: { analysisModels: [], generationModelsStrict: [], generationModelsAll: [], fetchedAt: 0 },
 };
 
 function extractRowModalities(row) {
@@ -1060,6 +1064,13 @@ function isOpenRouterGenerationModelRow(row) {
   return /(gpt-image|dall|flux|sdxl|ideogram|recraft|seedream|imagen)/.test(hay);
 }
 
+function isOpenRouterGenerationCandidateRow(row) {
+  const { output, hay, id } = extractRowModalities(row);
+  if (output.has('image')) return true;
+  if (id === 'openrouter/auto') return true;
+  return /(image|gpt-image|dall|flux|sdxl|ideogram|recraft|seedream|imagen|nanobanana)/.test(hay);
+}
+
 function alphaSortStrings(items) {
   return uniqStrings(items).sort((a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: 'base' }));
 }
@@ -1083,43 +1094,65 @@ async function fetchOpenRouterImageModelRows() {
 }
 
 async function refreshOpenRouterImageModels({ force = false } = {}) {
-  const cache = imageModelCache.openrouter || { analysisModels: [], generationModels: [], fetchedAt: 0 };
+  const cache = imageModelCache.openrouter || { analysisModels: [], generationModelsStrict: [], generationModelsAll: [], fetchedAt: 0 };
   const now = Date.now();
   const ttlMs = 10 * 60 * 1000;
 
-  if (!force && (cache.analysisModels.length || cache.generationModels.length) && (now - cache.fetchedAt) < ttlMs) {
+  if (!force && (cache.analysisModels.length || cache.generationModelsStrict.length || cache.generationModelsAll.length) && (now - cache.fetchedAt) < ttlMs) {
     openRouterAnalysisModels = cache.analysisModels.length ? cache.analysisModels : openRouterImageModelCandidates;
-    openRouterGenerationModels = cache.generationModels.length ? cache.generationModels : openRouterGenerationFallbackCandidates;
-    return { analysisModels: openRouterAnalysisModels, generationModels: openRouterGenerationModels };
+    openRouterGenerationModelsStrict = cache.generationModelsStrict.length ? cache.generationModelsStrict : openRouterGenerationFallbackCandidates;
+    openRouterGenerationModelsAll = cache.generationModelsAll.length ? cache.generationModelsAll : openRouterGenerationFallbackCandidates;
+    return {
+      analysisModels: openRouterAnalysisModels,
+      generationModelsStrict: openRouterGenerationModelsStrict,
+      generationModelsAll: openRouterGenerationModelsAll,
+    };
   }
 
   try {
     const rows = await fetchOpenRouterImageModelRows();
     const discoveredAnalysis = rows.filter(isOpenRouterAnalysisModelRow).map(row => row?.id).filter(Boolean);
-    const discoveredGeneration = rows.filter(isOpenRouterGenerationModelRow).map(row => row?.id).filter(Boolean);
+    const discoveredGenerationStrict = rows.filter(isOpenRouterGenerationModelRow).map(row => row?.id).filter(Boolean);
+    const discoveredGenerationAll = rows
+      .filter(isOpenRouterGenerationCandidateRow)
+      .map(row => row?.id)
+      .filter(Boolean);
 
     const mergedAnalysis = alphaSortStrings([...(discoveredAnalysis || []), ...openRouterImageModelCandidates]);
-    const mergedGeneration = alphaSortStrings([...(discoveredGeneration || []), ...openRouterGenerationFallbackCandidates]);
+    const mergedGenerationStrict = alphaSortStrings([...(discoveredGenerationStrict || []), ...openRouterGenerationFallbackCandidates]);
+    const mergedGenerationAll = alphaSortStrings([...(discoveredGenerationAll || []), ...openRouterGenerationFallbackCandidates]);
 
     cache.analysisModels = mergedAnalysis;
-    cache.generationModels = mergedGeneration;
+    cache.generationModelsStrict = mergedGenerationStrict;
+    cache.generationModelsAll = mergedGenerationAll;
     cache.fetchedAt = now;
     imageModelCache.openrouter = cache;
 
     openRouterAnalysisModels = mergedAnalysis.length ? mergedAnalysis : openRouterImageModelCandidates;
-    openRouterGenerationModels = mergedGeneration.length ? mergedGeneration : openRouterGenerationFallbackCandidates;
+    openRouterGenerationModelsStrict = mergedGenerationStrict.length ? mergedGenerationStrict : openRouterGenerationFallbackCandidates;
+    openRouterGenerationModelsAll = mergedGenerationAll.length ? mergedGenerationAll : openRouterGenerationFallbackCandidates;
 
-    return { analysisModels: openRouterAnalysisModels, generationModels: openRouterGenerationModels };
+    return {
+      analysisModels: openRouterAnalysisModels,
+      generationModelsStrict: openRouterGenerationModelsStrict,
+      generationModelsAll: openRouterGenerationModelsAll,
+    };
   } catch (err) {
     console.warn('OpenRouter image model scan failed:', err.message);
     if (!cache.analysisModels.length) cache.analysisModels = openRouterImageModelCandidates;
-    if (!cache.generationModels.length) cache.generationModels = openRouterGenerationFallbackCandidates;
+    if (!cache.generationModelsStrict.length) cache.generationModelsStrict = openRouterGenerationFallbackCandidates;
+    if (!cache.generationModelsAll.length) cache.generationModelsAll = openRouterGenerationFallbackCandidates;
     cache.fetchedAt = now;
     imageModelCache.openrouter = cache;
 
     openRouterAnalysisModels = cache.analysisModels;
-    openRouterGenerationModels = cache.generationModels;
-    return { analysisModels: openRouterAnalysisModels, generationModels: openRouterGenerationModels };
+    openRouterGenerationModelsStrict = cache.generationModelsStrict;
+    openRouterGenerationModelsAll = cache.generationModelsAll;
+    return {
+      analysisModels: openRouterAnalysisModels,
+      generationModelsStrict: openRouterGenerationModelsStrict,
+      generationModelsAll: openRouterGenerationModelsAll,
+    };
   }
 }
 
@@ -1131,7 +1164,7 @@ function clearModelCache(provider = null) {
       modelCache[key].models = [];
       modelCache[key].fetchedAt = 0;
     });
-    imageModelCache.openrouter = { analysisModels: [], generationModels: [], fetchedAt: 0 };
+    imageModelCache.openrouter = { analysisModels: [], generationModelsStrict: [], generationModelsAll: [], fetchedAt: 0 };
     return;
   }
 
@@ -1141,9 +1174,10 @@ function clearModelCache(provider = null) {
   }
 
   if (provider === 'openrouter') {
-    imageModelCache.openrouter = { analysisModels: [], generationModels: [], fetchedAt: 0 };
+    imageModelCache.openrouter = { analysisModels: [], generationModelsStrict: [], generationModelsAll: [], fetchedAt: 0 };
     openRouterAnalysisModels = [...openRouterImageModelCandidates];
-    openRouterGenerationModels = [...openRouterGenerationFallbackCandidates];
+    openRouterGenerationModelsStrict = [...openRouterGenerationFallbackCandidates];
+    openRouterGenerationModelsAll = [...openRouterGenerationFallbackCandidates];
   }
 }
 
