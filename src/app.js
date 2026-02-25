@@ -5,6 +5,7 @@ const multer = require('multer');
 const Database = require('better-sqlite3');
 const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk');
+const PDFDocument = require('pdfkit');
 const dotenv = require('dotenv');
 const { envFilePath, dataDir, uploadsDir, publicDir } = require('./config/paths');
 const { buildModelState: buildModelStateService } = require('./services/modelStateService');
@@ -2998,6 +2999,43 @@ app.get('/api/videos/:videoId/export/markdown', (req, res) => {
   res.send(md);
 });
 
+// Export as PDF
+app.get('/api/videos/:videoId/export/pdf', (req, res) => {
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.videoId);
+  if (!video) return res.status(404).json({ error: 'Not found' });
+
+  const safeName = video.title.replace(/[^a-zA-Z0-9]/g, '_') || 'video';
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pdf"`);
+
+  const doc = new PDFDocument({ size: 'A4', margin: 48 });
+  doc.pipe(res);
+
+  const writeSection = (title, text) => {
+    doc.moveDown(0.8);
+    doc.font('Helvetica-Bold').fontSize(14).text(title);
+    doc.moveDown(0.25);
+    doc.font('Helvetica').fontSize(11).text(String(text || '(empty)'), {
+      width: 500,
+      align: 'left',
+      lineGap: 2,
+    });
+  };
+
+  doc.font('Helvetica-Bold').fontSize(22).text(video.title || 'Untitled Video');
+  doc.moveDown(0.25);
+  doc.font('Helvetica').fontSize(10).fillColor('#666').text(`Status: ${video.status || 'draft'}`);
+  doc.text(`Last updated: ${video.updated_at || ''}`);
+  doc.fillColor('#000');
+
+  writeSection('Script', video.script_content);
+  writeSection('Description', video.description);
+  writeSection('Voiceover Notes', video.voiceover_notes);
+  writeSection('Thumbnail Ideas', video.thumbnail_ideas);
+
+  doc.end();
+});
+
 // Export as JSON (full data with chat history)
 app.get('/api/videos/:videoId/export/json', (req, res) => {
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.videoId);
@@ -3079,68 +3117,6 @@ app.get('/api/memory/global', (req, res) => {
 app.put('/api/memory/global', (req, res) => {
   fs.writeFileSync(globalMemoryPath, JSON.stringify(req.body, null, 2));
   res.json({ success: true });
-});
-
-// --- TTS Preview ---
-app.post('/api/tts', async (req, res) => {
-  const { text } = req.body;
-  if (!text || text.length > 5000) return res.status(400).json({ error: 'Text required (max 5000 chars)' });
-  
-  try {
-    // Read ElevenLabs API key from secrets
-    const secretsPath = '/root/.openclaw/.secrets.env';
-    let apiKey = '';
-    if (fs.existsSync(secretsPath)) {
-      const secrets = fs.readFileSync(secretsPath, 'utf-8');
-      const match = secrets.match(/ELEVENLABS_API_KEY=["']?(.+?)["']?\s*$/m);
-      if (match) apiKey = match[1].trim();
-    }
-    
-    if (!apiKey) {
-      return res.status(500).json({ error: 'ElevenLabs API key not configured' });
-    }
-    
-    // Use Rachel voice (default, good for voiceovers)
-    const voiceId = '21m00Tcm4TlvDq8ikWAM'; // Rachel
-    
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'xi-api-key': apiKey
-      },
-      body: JSON.stringify({
-        text: text,
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 }
-      })
-    });
-    
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: `TTS failed: ${errText}` });
-    }
-    
-    // Save audio to temp file
-    const audioDir = path.join(publicDir, 'audio');
-    fs.mkdirSync(audioDir, { recursive: true });
-    const filename = `tts-${Date.now()}.mp3`;
-    const filepath = path.join(audioDir, filename);
-    
-    const buffer = Buffer.from(await response.arrayBuffer());
-    fs.writeFileSync(filepath, buffer);
-    
-    // Clean up old TTS files (keep last 20)
-    const files = fs.readdirSync(audioDir).filter(f => f.startsWith('tts-')).sort();
-    while (files.length > 20) {
-      fs.unlinkSync(path.join(audioDir, files.shift()));
-    }
-    
-    res.json({ url: `/audio/${filename}`, duration: Math.ceil(text.split(/\s+/).length / 150 * 60) });
-  } catch (err) {
-    console.error('TTS error:', err);
-    res.status(500).json({ error: err.message });
-  }
 });
 
 // --- Activity Log / Timeline ---
@@ -3500,6 +3476,14 @@ ${editorContext ? `- Context from docs:\n${editorContext}` : '- No docs context 
 
 ## Communication Style
 Same as always — direct, warm, a little sarcastic, never fake. You know ${userName}. You care about making their videos great. Skip the pleasantries and dig into the work.
+
+## Baseline Scriptwriting Setup (default when starting from scratch)
+If the project is blank, use this as the default structure unless ${userName} asks otherwise:
+1) Hook (first 5-15 seconds)
+2) Context / Problem setup
+3) Main beats (3-5 clear points)
+4) Personal observations + tension/payoff
+5) Closing insight + CTA
 
 **CRITICAL: Keep responses SHORT.**
 - ${userName} is a slow reader who needs hand-holding

@@ -145,6 +145,7 @@
                 <div id="export-menu" class="export-menu hidden">
                   <button onclick="exportVideo('markdown')">📄 Markdown (.md)</button>
                   <button onclick="exportVideo('text')">📝 Plain Text (.txt)</button>
+                  <button onclick="exportVideo('pdf')">📕 PDF (.pdf)</button>
                   <button onclick="exportVideo('youtube')">🎬 YouTube Script</button>
                   <button onclick="exportVideo('json')">💾 Full Backup (.json)</button>
                   <button onclick="copyDescription()">📋 Copy Description</button>
@@ -200,12 +201,6 @@
               <div id="description-editor" class="cm-editor-wrap" data-placeholder="Video description for YouTube..."></div>
             </div>
             <div class="editor-area" id="editor-voiceover">
-              <div class="voiceover-toolbar">
-                <button class="toolbar-btn" onclick="previewVoiceover()" id="tts-btn">🔊 Preview Voiceover</button>
-                <button class="toolbar-btn" onclick="previewSelection()" id="tts-selection-btn">🎯 Preview Selection</button>
-                <span id="tts-status" class="tts-status"></span>
-              </div>
-              <audio id="tts-player" controls class="tts-player hidden"></audio>
               <div id="voiceover-editor" class="cm-editor-wrap" data-placeholder="Voiceover notes, tone directions, timing cues..."></div>
             </div>
             <div class="editor-area" id="editor-thumbnails">
@@ -240,7 +235,7 @@
               <div class="seo-panel">
                 <div class="seo-score" id="seo-score">
                   <div class="score-circle" id="score-circle">--</div>
-                  <span>SEO Score</span>
+                  <span>SEO Heuristic Score</span>
                 </div>
                 <div class="seo-checks" id="seo-checks"></div>
                 <div class="seo-suggestions">
@@ -276,10 +271,11 @@
           </div>
           
           <!-- Snapshot Panel -->
+          <div id="snapshot-backdrop" class="snapshot-backdrop hidden" onclick="toggleSnapshotPanel(true)"></div>
           <div id="snapshot-panel" class="snapshot-panel hidden">
             <div class="snapshot-header">
               <h3>Version History</h3>
-              <button onclick="toggleSnapshotPanel()" class="btn-close">✕</button>
+              <button onclick="toggleSnapshotPanel(true)" class="btn-close">✕</button>
             </div>
             <div id="snapshot-list" class="snapshot-list"></div>
           </div>

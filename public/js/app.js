@@ -2060,79 +2060,17 @@ function closeImagePreview() {
   $('#image-preview-overlay').classList.add('hidden');
 }
 
-// === TTS Preview ===
-async function previewVoiceover() {
-  const editor = editors['voiceover-editor'];
-  if (!editor) return;
-  const text = editor.getValue().trim();
-  if (!text) { 
-    showToast('No voiceover text to preview'); 
-    return; 
-  }
-  await generateTTS(text);
-}
-
-async function previewSelection() {
-  const editor = editors['voiceover-editor'];
-  if (!editor) return;
-  const selection = editor.getSelection().trim();
-  if (!selection) { 
-    showToast('Select some text first'); 
-    return; 
-  }
-  await generateTTS(selection);
-}
-
-async function generateTTS(text) {
-  const btn = document.getElementById('tts-btn');
-  const status = document.getElementById('tts-status');
-  const player = document.getElementById('tts-player');
-  
-  if (!btn || !status || !player) {
-    showToast('TTS UI elements not found');
-    return;
-  }
-  
-  if (text.length > 5000) {
-    showToast('Text too long (max 5000 chars). Select a section.');
-    return;
-  }
-  
-  btn.disabled = true;
-  status.textContent = '🔄 Generating...';
-  
-  try {
-    const res = await fetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-    const data = await res.json();
-    
-    if (data.error) {
-      status.textContent = '❌ ' + data.error;
-      showToast('TTS error: ' + data.error);
-      return;
-    }
-    
-    player.src = data.url;
-    player.classList.remove('hidden');
-    player.play();
-    status.textContent = `✅ ~${data.duration}s`;
-    showToast('Audio generated!');
-  } catch (err) {
-    status.textContent = '❌ Error generating audio';
-    showToast('Error generating audio: ' + err.message);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
 // === Init ===
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   syncLayoutHeight();
   window.addEventListener('resize', debounce(syncLayoutHeight, 120));
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (!$('#snapshot-panel')?.classList.contains('hidden')) toggleSnapshotPanel(true);
+      if (!$('#suggestion-overlay')?.classList.contains('hidden')) closeSuggestionOverlay();
+    }
+  });
   // NOTE: initEditors() is called in openVideo() after the workspace view is shown
   loadVideos();
   initResize();
@@ -2319,9 +2257,19 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- Version History / Snapshots ---
-async function toggleSnapshotPanel() {
+async function toggleSnapshotPanel(forceClose = false) {
   const panel = $('#snapshot-panel');
+  const backdrop = $('#snapshot-backdrop');
+  if (!panel) return;
+
+  if (forceClose) {
+    panel.classList.add('hidden');
+    if (backdrop) backdrop.classList.add('hidden');
+    return;
+  }
+
   panel.classList.toggle('hidden');
+  if (backdrop) backdrop.classList.toggle('hidden', panel.classList.contains('hidden'));
   if (!panel.classList.contains('hidden')) await loadSnapshots();
 }
 
