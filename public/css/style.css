@@ -361,18 +361,20 @@ body {
 .tab.active { background: var(--accent-light); color: var(--accent); }
 
 .editor-content { flex: 1; overflow: hidden; position: relative; }
-.editor-area { display: none; height: 100%; flex-direction: column; padding: 16px; }
+.editor-area { display: none; height: 100%; min-height: 0; flex-direction: column; padding: 16px; }
 .editor-area.active { display: flex; }
 
 /* === Section Outline === */
 .editor-script-container { 
   display: flex; 
   flex-direction: row; 
-  height: 100%; 
+  flex: 1;
+  min-height: 0;
   gap: 0; 
 }
 .script-editor-wrapper { 
   flex: 1; 
+  min-height: 0;
   display: flex; 
   flex-direction: column; 
   position: relative;
@@ -1010,6 +1012,7 @@ body {
   overflow-y: auto; 
   background: var(--bg-secondary); 
   border-top: 1px solid var(--border); 
+  flex-shrink: 0;
 }
 .section-time-item { 
   display: flex; 
