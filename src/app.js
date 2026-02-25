@@ -835,7 +835,12 @@ const openRouterImageModelCandidates = parseCsv(
   process.env.NORA_WRITER_OPENROUTER_IMAGE_MODELS
     || process.env.NORA_WRITER_IMAGE_MODELS
     || process.env.NORA_WRITER_VISION_MODEL,
-  ['google/gemini-2.5-flash-image-preview', 'google/gemini-2.5-pro', 'x-ai/grok-2-vision-1212']
+  ['google/gemini-3.1-pro-preview', 'google/gemini-2.5-flash', 'x-ai/grok-2-vision-1212']
+);
+
+const openRouterGenerationFallbackCandidates = parseCsv(
+  process.env.NORA_WRITER_OPENROUTER_IMAGE_GENERATION_MODELS,
+  ['google/gemini-3-pro-image-preview', 'google/gemini-2.5-flash-image', 'openai/gpt-5-image-mini', 'openai/gpt-5-image', 'openrouter/auto']
 );
 
 const geminiImageModelCandidates = parseCsv(
@@ -870,7 +875,8 @@ const imageGenerationProviderCatalog = [
   { id: 'openrouter', label: 'OpenRouter Image', requiresProvider: 'openrouter' },
 ];
 
-let openRouterImageModels = [...openRouterImageModelCandidates];
+let openRouterAnalysisModels = [...openRouterImageModelCandidates];
+let openRouterGenerationModels = [...openRouterGenerationFallbackCandidates];
 
 function imageProviderLabel(providerId) {
   const all = [...imageAnalysisProviderCatalog, ...imageGenerationProviderCatalog];
@@ -892,18 +898,18 @@ function isImageProviderConfigured(providerId, mode = 'analysis') {
 function getImageAnalysisModels(provider = 'claude') {
   const normalized = String(provider || '').trim();
   if (!normalized) return [];
-  if (normalized === 'claude') return claudeImageModelCandidates;
-  if (normalized === 'grok-vision') return xaiImageModelCandidates;
-  if (normalized === 'gemini') return geminiImageModelCandidates;
-  return openRouterImageModels.length ? openRouterImageModels : openRouterImageModelCandidates;
+  if (normalized === 'claude') return alphaSortStrings(claudeImageModelCandidates);
+  if (normalized === 'grok-vision') return alphaSortStrings(xaiImageModelCandidates);
+  if (normalized === 'gemini') return alphaSortStrings(geminiImageModelCandidates);
+  return alphaSortStrings(openRouterAnalysisModels.length ? openRouterAnalysisModels : openRouterImageModelCandidates);
 }
 
 function getImageGenerationModels(provider = 'nanobanana') {
   const normalized = String(provider || '').trim();
   if (!normalized) return [];
-  if (normalized === 'grok-vision') return xaiImageModelCandidates;
-  if (normalized === 'gemini') return geminiImageModelCandidates;
-  return openRouterImageModels.length ? openRouterImageModels : openRouterImageModelCandidates;
+  if (normalized === 'grok-vision') return alphaSortStrings(xaiImageModelCandidates);
+  if (normalized === 'gemini') return alphaSortStrings(geminiImageModelCandidates);
+  return alphaSortStrings(openRouterGenerationModels.length ? openRouterGenerationModels : openRouterGenerationFallbackCandidates);
 }
 
 function getAvailableImageAnalysisProviders() {
@@ -1014,21 +1020,45 @@ const modelCache = {
 };
 
 const imageModelCache = {
-  openrouter: { models: [], fetchedAt: 0 },
+  openrouter: { analysisModels: [], generationModels: [], fetchedAt: 0 },
 };
 
-function isImageModelRow(row) {
-  const bucket = [];
-  if (Array.isArray(row?.modalities)) bucket.push(...row.modalities);
-  if (Array.isArray(row?.architecture?.input_modalities)) bucket.push(...row.architecture.input_modalities);
-  if (Array.isArray(row?.architecture?.output_modalities)) bucket.push(...row.architecture.output_modalities);
-  if (typeof row?.architecture?.modality === 'string') bucket.push(row.architecture.modality);
+function extractRowModalities(row) {
+  const arch = row?.architecture || {};
+  const input = new Set((arch.input_modalities || []).map(v => String(v || '').toLowerCase()));
+  const output = new Set((arch.output_modalities || []).map(v => String(v || '').toLowerCase()));
+  const all = new Set();
 
-  const hay = `${bucket.join(' ')} ${row?.id || ''} ${row?.name || ''}`.toLowerCase();
-  return hay.includes('image') || hay.includes('vision');
+  for (const v of input) all.add(v);
+  for (const v of output) all.add(v);
+  for (const v of (row?.modalities || [])) all.add(String(v || '').toLowerCase());
+  if (typeof arch.modality === 'string') all.add(String(arch.modality).toLowerCase());
+
+  const id = String(row?.id || '').toLowerCase();
+  const name = String(row?.name || '').toLowerCase();
+  const hay = `${id} ${name}`;
+  return { input, output, all, hay, id, name };
 }
 
-async function fetchOpenRouterImageModelIds() {
+function isOpenRouterAnalysisModelRow(row) {
+  const { input, all, hay } = extractRowModalities(row);
+  if (input.has('image')) return true;
+  if (all.has('vision') || all.has('image')) return true;
+  return /vision|image/.test(hay);
+}
+
+function isOpenRouterGenerationModelRow(row) {
+  const { output, all, hay } = extractRowModalities(row);
+  if (output.has('image')) return true;
+  if (!all.has('image')) return false;
+  return /(image|flux|sdxl|dall|ideogram|recraft|imagen|seedream|gpt-image)/.test(hay);
+}
+
+function alphaSortStrings(items) {
+  return uniqStrings(items).sort((a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: 'base' }));
+}
+
+async function fetchOpenRouterImageModelRows() {
   if (!openRouterApiKey) return [];
   const url = `${openRouterBaseUrl.replace(/\/$/, '')}/models`;
   const response = await fetch(url, {
@@ -1043,35 +1073,47 @@ async function fetchOpenRouterImageModelIds() {
   }
 
   const payload = await response.json();
-  const rows = Array.isArray(payload?.data) ? payload.data : [];
-  return uniqStrings(rows.filter(isImageModelRow).map(row => row?.id).filter(Boolean));
+  return Array.isArray(payload?.data) ? payload.data : [];
 }
 
 async function refreshOpenRouterImageModels({ force = false } = {}) {
-  const cache = imageModelCache.openrouter || { models: [], fetchedAt: 0 };
+  const cache = imageModelCache.openrouter || { analysisModels: [], generationModels: [], fetchedAt: 0 };
   const now = Date.now();
   const ttlMs = 10 * 60 * 1000;
 
-  if (!force && cache.models.length > 0 && (now - cache.fetchedAt) < ttlMs) {
-    openRouterImageModels = cache.models;
-    return openRouterImageModels;
+  if (!force && (cache.analysisModels.length || cache.generationModels.length) && (now - cache.fetchedAt) < ttlMs) {
+    openRouterAnalysisModels = cache.analysisModels.length ? cache.analysisModels : openRouterImageModelCandidates;
+    openRouterGenerationModels = cache.generationModels.length ? cache.generationModels : openRouterGenerationFallbackCandidates;
+    return { analysisModels: openRouterAnalysisModels, generationModels: openRouterGenerationModels };
   }
 
   try {
-    const discovered = await fetchOpenRouterImageModelIds();
-    const merged = uniqStrings([...(discovered || []), ...openRouterImageModelCandidates]);
-    cache.models = merged;
+    const rows = await fetchOpenRouterImageModelRows();
+    const discoveredAnalysis = rows.filter(isOpenRouterAnalysisModelRow).map(row => row?.id).filter(Boolean);
+    const discoveredGeneration = rows.filter(isOpenRouterGenerationModelRow).map(row => row?.id).filter(Boolean);
+
+    const mergedAnalysis = alphaSortStrings([...(discoveredAnalysis || []), ...openRouterImageModelCandidates]);
+    const mergedGeneration = alphaSortStrings([...(discoveredGeneration || []), ...openRouterGenerationFallbackCandidates]);
+
+    cache.analysisModels = mergedAnalysis;
+    cache.generationModels = mergedGeneration;
     cache.fetchedAt = now;
     imageModelCache.openrouter = cache;
-    openRouterImageModels = merged.length ? merged : openRouterImageModelCandidates;
-    return openRouterImageModels;
+
+    openRouterAnalysisModels = mergedAnalysis.length ? mergedAnalysis : openRouterImageModelCandidates;
+    openRouterGenerationModels = mergedGeneration.length ? mergedGeneration : openRouterGenerationFallbackCandidates;
+
+    return { analysisModels: openRouterAnalysisModels, generationModels: openRouterGenerationModels };
   } catch (err) {
     console.warn('OpenRouter image model scan failed:', err.message);
-    if (!cache.models.length) cache.models = openRouterImageModelCandidates;
+    if (!cache.analysisModels.length) cache.analysisModels = openRouterImageModelCandidates;
+    if (!cache.generationModels.length) cache.generationModels = openRouterGenerationFallbackCandidates;
     cache.fetchedAt = now;
     imageModelCache.openrouter = cache;
-    openRouterImageModels = cache.models;
-    return openRouterImageModels;
+
+    openRouterAnalysisModels = cache.analysisModels;
+    openRouterGenerationModels = cache.generationModels;
+    return { analysisModels: openRouterAnalysisModels, generationModels: openRouterGenerationModels };
   }
 }
 
@@ -1083,7 +1125,7 @@ function clearModelCache(provider = null) {
       modelCache[key].models = [];
       modelCache[key].fetchedAt = 0;
     });
-    imageModelCache.openrouter = { models: [], fetchedAt: 0 };
+    imageModelCache.openrouter = { analysisModels: [], generationModels: [], fetchedAt: 0 };
     return;
   }
 
@@ -1093,7 +1135,9 @@ function clearModelCache(provider = null) {
   }
 
   if (provider === 'openrouter') {
-    imageModelCache.openrouter = { models: [], fetchedAt: 0 };
+    imageModelCache.openrouter = { analysisModels: [], generationModels: [], fetchedAt: 0 };
+    openRouterAnalysisModels = [...openRouterImageModelCandidates];
+    openRouterGenerationModels = [...openRouterGenerationFallbackCandidates];
   }
 }
 
@@ -1910,6 +1954,40 @@ async function runClaudeWithModelFallback({ systemPrompt, apiMessages, onText, m
     maxModels,
     activateProvider: false,
   });
+}
+
+async function runTextPlanningWithProviderFallback({ systemPrompt, apiMessages, onText = null, maxModels = 4 }) {
+  const configured = providerStatus().filter(p => p.configured).map(p => p.id);
+  const ordered = uniqStrings([
+    selectedTextProvider,
+    ...configured,
+    'openrouter',
+    'openai',
+    'gemini',
+    'anthropic',
+    'xai',
+    'ollama',
+  ]).filter(id => textProviderIds.includes(id));
+
+  let lastErr = null;
+  for (const provider of ordered) {
+    if (!providerIsConfigured(provider)) continue;
+    try {
+      return await runProviderWithModelFallback({
+        provider,
+        systemPrompt,
+        apiMessages,
+        onText,
+        maxModels,
+        activateProvider: false,
+      });
+    } catch (err) {
+      lastErr = err;
+      console.warn(`Planning provider ${provider} failed, trying next:`, err.message);
+    }
+  }
+
+  throw lastErr || new Error('No working text provider available for thumbnail planning.');
 }
 
 async function runImageAnalysisResponse({ systemPrompt, apiMessages, onText, providerOverride = null, modelOverride = null }) {
@@ -3429,7 +3507,7 @@ ${instruction || '(none)'}
 
 Create a stronger subversion while preserving truthful packaging and mobile legibility.`;
 
-    const planRaw = await runClaudeWithModelFallback({
+    const planRaw = await runTextPlanningWithProviderFallback({
       systemPrompt: planSystemPrompt,
       apiMessages: [{ role: 'user', content: planUserPrompt }],
       onText: null,
@@ -3568,7 +3646,7 @@ ${instruction || '(none)'}
 
 Generate a fresh thumbnail concept from scratch (not a variation of an existing image) while preserving truthful packaging and mobile legibility.`;
 
-    const planRaw = await runClaudeWithModelFallback({
+    const planRaw = await runTextPlanningWithProviderFallback({
       systemPrompt: planSystemPrompt,
       apiMessages: [{ role: 'user', content: planUserPrompt }],
       onText: null,

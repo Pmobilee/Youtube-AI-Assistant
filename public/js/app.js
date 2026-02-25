@@ -126,6 +126,15 @@ function providerLabel(providerId) {
   return labels[providerId] || providerId;
 }
 
+function sortAlpha(values = []) {
+  const rows = Array.isArray(values) ? [...values] : [];
+  return rows.sort((a, b) => {
+    const va = String(typeof a === 'string' ? a : (a?.id || '')).toLowerCase();
+    const vb = String(typeof b === 'string' ? b : (b?.id || '')).toLowerCase();
+    return va.localeCompare(vb);
+  });
+}
+
 function fillSelectOptions(selectEl, values = [], selectedValue = '', mapper = null) {
   if (!selectEl) return;
   const rows = Array.isArray(values) ? values : [];
@@ -315,7 +324,7 @@ function applyModelState(rawState = {}) {
   }
 
   if (modelSelect) {
-    fillSelectOptions(modelSelect, availableModels, selectedModel, (entry) => String(entry));
+    fillSelectOptions(modelSelect, sortAlpha(availableModels), selectedModel, (entry) => String(entry));
   }
 
   if (imageAnalysisSelect) {
@@ -323,7 +332,7 @@ function applyModelState(rawState = {}) {
   }
 
   if (imageAnalysisModelSelect) {
-    fillSelectOptions(imageAnalysisModelSelect, state.imageAnalysisModels || [], selectedImageAnalysisModel, (entry) => String(entry));
+    fillSelectOptions(imageAnalysisModelSelect, sortAlpha(state.imageAnalysisModels || []), selectedImageAnalysisModel, (entry) => String(entry));
   }
 
   if (imageGenerationSelect) {
@@ -331,7 +340,7 @@ function applyModelState(rawState = {}) {
   }
 
   if (imageGenerationModelSelect) {
-    fillSelectOptions(imageGenerationModelSelect, state.imageGenerationModels || [], selectedImageGenerationModel, (entry) => String(entry));
+    fillSelectOptions(imageGenerationModelSelect, sortAlpha(state.imageGenerationModels || []), selectedImageGenerationModel, (entry) => String(entry));
   }
 
   applyEditorBranding();
