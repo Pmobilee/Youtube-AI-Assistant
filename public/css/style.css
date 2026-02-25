@@ -775,14 +775,29 @@ body {
   margin: 24px 0 12px;
   color: var(--text);
 }
+.thumbnail-upload-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
 .thumbnail-upload-zone { 
+  flex: 1;
   border: 2px dashed var(--border); 
   border-radius: 12px; 
   padding: 24px; 
   text-align: center; 
   cursor: pointer; 
-  margin-bottom: 16px; 
+  margin-bottom: 0; 
   transition: all 0.2s; 
+}
+
+.thumb-fresh-btn {
+  min-width: 250px;
+  white-space: normal;
+  line-height: 1.25;
+  font-weight: 600;
 }
 .thumbnail-upload-zone:hover, 
 .thumbnail-upload-zone.drag-over { 
@@ -1391,6 +1406,8 @@ body {
   .top-nav { flex-wrap: wrap; gap: 8px; }
   .nav-tabs, .nav-workspace-controls { width: 100%; }
   .nav-logo-image { width: 140px; height: 32px; }
+  .thumbnail-upload-row { flex-direction: column; }
+  .thumb-fresh-btn { min-width: 0; width: 100%; }
 }
 
 /* === SEO Panel === */
