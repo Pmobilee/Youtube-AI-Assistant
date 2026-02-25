@@ -52,16 +52,20 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+html, body, #app {
+  height: 100%;
+}
+
 body {
   font-family: var(--font);
   background: var(--bg);
   color: var(--text);
   line-height: 1.6;
-  min-height: 100vh;
+  overflow: hidden;
 }
 
 /* === Views === */
-.view { display: none; height: 100vh; flex-direction: column; }
+.view { display: none; height: calc(100vh - var(--top-nav-height, 68px)); flex-direction: column; }
 .view.active { display: flex; }
 
 /* === Buttons === */
@@ -1835,7 +1839,7 @@ body {
 
 .section-view {
   display: none;
-  height: calc(100vh - 57px);
+  height: calc(100vh - var(--top-nav-height, 68px));
   flex-direction: column;
 }
 

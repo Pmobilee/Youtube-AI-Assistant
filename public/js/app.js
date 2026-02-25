@@ -16,6 +16,7 @@ let selectedEditorName = 'DaVinci Resolve';
 let selectedEditorShortName = 'DaVinci';
 let selectedEditorTipsTitle = 'DaVinci Resolve Tips & Tricks';
 let selectedEditorChatTitle = 'DaVinci Chat';
+let currentUserName = 'Nora';
 let availableEditors = [];
 let editorContextMeta = null;
 let thumbnailVersions = [];
@@ -60,6 +61,12 @@ function updateThemeButtons() {
   if ($('#theme-toggle')) $('#theme-toggle').textContent = icon;
   if ($('#theme-toggle-ws')) $('#theme-toggle-ws').textContent = icon;
   if ($('#theme-toggle-nav')) $('#theme-toggle-nav').textContent = icon;
+}
+
+function syncLayoutHeight() {
+  const nav = document.querySelector('.top-nav');
+  const navHeight = nav ? Math.round(nav.getBoundingClientRect().height) : 68;
+  document.documentElement.style.setProperty('--top-nav-height', `${navHeight}px`);
 }
 
 function initEditors() {
@@ -209,7 +216,7 @@ function applyEditorBranding() {
   if (chatSubtitle) chatSubtitle.textContent = `Ask Kona about ${selectedEditorName}`;
   const chatWelcome = $('#editor-chat-welcome');
   if (chatWelcome) {
-    chatWelcome.innerHTML = `🌺 <strong>Hey Nora!</strong> Ask me anything about ${selectedEditorName}. I’ve got your ${selectedEditorName} tips doc loaded, so I know what you already know.`;
+    chatWelcome.innerHTML = `🌺 <strong>Hey ${escapeHtml(currentUserName)}!</strong> Ask me anything about ${selectedEditorName}. I’ve got your ${selectedEditorName} tips doc loaded, so I know what you already know.`;
   }
   const chatInput = $('#davinci-input');
   if (chatInput) chatInput.placeholder = `Ask about ${selectedEditorName}...`;
@@ -225,6 +232,7 @@ function applyEditorBranding() {
   window.getActiveEditorShortName = () => selectedEditorShortName;
   window.getActiveEditorTipsTitle = () => selectedEditorTipsTitle;
   window.getActiveEditorChatTitle = () => selectedEditorChatTitle;
+  window.getCurrentUserName = () => currentUserName;
 }
 
 function normalizeModelState(data = {}) {
@@ -238,6 +246,7 @@ function normalizeModelState(data = {}) {
     selectedEditorId: data.selectedEditorId || selectedEditorId,
     selectedEditorName: data.selectedEditorName || selectedEditorName,
     selectedEditorShortName: data.selectedEditorShortName || selectedEditorShortName,
+    profileName: data.profileName || data.userName || currentUserName,
     editors: data.editors || availableEditors,
     editorContext: data.editorContext || editorContextMeta,
   };
@@ -251,6 +260,7 @@ function applyModelState(rawState = {}) {
   availableModels = Array.isArray(state.models) ? state.models : [];
   availableTextProviders = Array.isArray(state.textProviders) ? state.textProviders : [];
   selectedEditorId = state.selectedEditorId || selectedEditorId;
+  currentUserName = String(state.profileName || currentUserName || 'Nora').trim() || 'Nora';
   availableEditors = Array.isArray(state.editors) ? state.editors : availableEditors;
   editorContextMeta = state.editorContext || editorContextMeta;
 
@@ -355,6 +365,11 @@ async function loadSettingsPage() {
     renderProviderKeyHints(data.providers || []);
     applyModelState(data);
 
+    const userNameInput = $('#settings-user-name');
+    if (userNameInput) {
+      userNameInput.value = String(data.profileName || currentUserName || 'Nora');
+    }
+
     const ollamaBaseInput = $('#settings-ollama-base-url');
     if (ollamaBaseInput) {
       ollamaBaseInput.value = String(data.ollamaBaseUrl || ollamaBaseInput.value || 'http://127.0.0.1:11434');
@@ -372,6 +387,7 @@ async function saveSettings() {
     selectedTextProvider,
     selectedTextModel: selectedModel,
     selectedImageAnalysisProvider,
+    profileName: String($('#settings-user-name')?.value || '').trim() || currentUserName || 'Nora',
     keys: {},
   };
 
@@ -875,7 +891,7 @@ function renderFindings() {
   if (!list) return;
 
   if (!findingsData.length) {
-    list.innerHTML = '<div class="tips-empty"><h3>No findings yet</h3><p>Add durable learnings Nora wants always applied.</p></div>';
+    list.innerHTML = `<div class="tips-empty"><h3>No findings yet</h3><p>Add durable learnings ${escapeHtml(currentUserName)} wants always applied.</p></div>`;
     return;
   }
 
@@ -1063,7 +1079,7 @@ async function loadChannelMessages(videoId, channel) {
 }
 
 function renderMessage(role, content, imageUrl = null) {
-  const sender = role === 'user' ? 'Nora' : 'Kona 🌺';
+  const sender = role === 'user' ? currentUserName : 'Kona 🌺';
   const processed = processMessageContent(content, role === 'assistant');
   
   // If there's an image URL, display it before the text
@@ -1080,16 +1096,47 @@ function renderMessage(role, content, imageUrl = null) {
   `;
 }
 
+function renderSuggestionDiffCard(idx, suggestion) {
+  if (!suggestion) return '';
+  const id = `suggest-${Date.now()}-${idx}`;
+  const tab = String(suggestion.tab || 'script');
+  const section = String(suggestion.section || '').trim();
+  const oldText = String(suggestion.oldText || '').trim();
+  const newText = String(suggestion.newText || '').trim();
+
+  const oldTextJson = JSON.stringify(oldText).replace(/'/g, "\\'");
+  const newTextJson = JSON.stringify(newText).replace(/'/g, "\\'");
+
+  return `
+    <div class="suggestion-diff" id="${id}">
+      <div class="diff-header">
+        <span class="diff-tab">📝 ${escapeHtml(tab)}${section ? ` › ${escapeHtml(section)}` : ''}</span>
+        <div class="diff-actions">
+          <button class="diff-accept" onclick="acceptSuggestion('${id}', '${escapeHtml(tab)}', ${oldTextJson}, ${newTextJson})">✓ Accept</button>
+          <button class="diff-reject" onclick="rejectSuggestion('${id}')">✕ Reject</button>
+        </div>
+      </div>
+      <div class="diff-body">
+        <div class="diff-old"><span class="diff-label">- Remove</span><pre>${escapeHtml(oldText)}</pre></div>
+        <div class="diff-new"><span class="diff-label">+ Add</span><pre>${escapeHtml(newText)}</pre></div>
+      </div>
+    </div>
+  `;
+}
+
 function processMessageContent(content, isAssistant) {
-  // Extract suggestion blocks FIRST — show as clickable one-liners in chat
   if (isAssistant) {
-    const suggestionRegex = /<<<SUGGEST\s+tab="(\w+)"(?:\s+section="(.*?)")?\s*>>>\n---OLD---\n([\s\S]*?)\n---NEW---\n([\s\S]*?)\n<<<END_SUGGEST>>>/g;
-    
+    const suggestionRegex = /<<<SUGGEST\s+tab="([^"]+)"(?:\s+section="([^"]*)")?\s*>>>\s*[\r\n]+---OLD---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---NEW---\s*[\r\n]+([\s\S]*?)\s*<<<END_SUGGEST>>>/gi;
+
     content = content.replace(suggestionRegex, (match, tab, section, oldText, newText) => {
       const idx = pendingSuggestions.length;
-      const label = section || tab;
-      pendingSuggestions.push({ tab, section, oldText: oldText.trim(), newText: newText.trim() });
-      return `[SUGGESTION_CHIP:${idx}:${label}]`;
+      pendingSuggestions.push({
+        tab: String(tab || 'script').trim(),
+        section: String(section || '').trim(),
+        oldText: String(oldText || '').trim(),
+        newText: String(newText || '').trim(),
+      });
+      return `[SUGGESTION_DIFF:${idx}]`;
     });
   }
 
@@ -1114,7 +1161,7 @@ function processMessageContent(content, isAssistant) {
     html = html.replace(/\[\[section:(.+?)\]\]/g, '<span class="section-ref" onclick="scrollToSection(\'$1\')">📌 <u>$1</u></span>');
   }
   // Image URLs (shared images)
-  html = html.replace(/\[Image shared: [^\]]+\]\s*(\S+\.(?:png|jpg|jpeg|gif|webp))/gi, 
+  html = html.replace(/\[Image shared: [^\]]+\]\s*(\S+\.(?:png|jpg|jpeg|gif|webp))/gi,
     '<img src="$1" class="chat-image" onclick="openImagePreview(\'$1\')" alt="Shared image">');
   // Paragraphs
   html = html.replace(/\n\n/g, '</p><p>');
@@ -1125,52 +1172,15 @@ function processMessageContent(content, isAssistant) {
   html = html.replace(/<p>(<ul>)/g, '$1');
   html = html.replace(/(<\/ul>)<\/p>/g, '$1');
 
-  // Render suggestion chips as clickable one-liners
-  html = html.replace(/\[SUGGESTION_CHIP:(\d+):(.*?)\]/g, (match, idx, label) => {
-    return `<span class="suggestion-chip" onclick="showSuggestion(${idx})" id="suggestion-chip-${idx}">💡 <u>Suggestion: ${escapeHtml(label)}</u></span>`;
+  html = html.replace(/\[SUGGESTION_DIFF:(\d+)\]/g, (match, idxRaw) => {
+    const idx = Number(idxRaw);
+    return renderSuggestionDiffCard(idx, pendingSuggestions[idx]);
   });
-
-  // Process suggestions into inline diffs (Feature 5)
-  if (isAssistant) {
-    html = processSuggestions(html);
-  }
 
   return html;
 }
 
 // === Feature 5: Inline Git-Diff Style Suggestions ===
-
-function processSuggestions(html) {
-  const suggestionRegex = /&lt;&lt;&lt;SUGGEST\s+tab=&quot;(\w+)&quot;(?:\s+section=&quot;([^&]*)&quot;)?\s*&gt;&gt;&gt;\n---OLD---\n([\s\S]*?)\n---NEW---\n([\s\S]*?)\n&lt;&lt;&lt;END_SUGGEST&gt;&gt;&gt;/g;
-  
-  let idx = 0;
-  return html.replace(suggestionRegex, (match, tab, section, oldText, newText) => {
-    const id = `suggest-${Date.now()}-${idx++}`;
-    // Unescape HTML entities in oldText and newText for proper display
-    const oldTextUnescaped = unescapeHtml(oldText);
-    const newTextUnescaped = unescapeHtml(newText);
-    
-    // Escape for JSON embedding
-    const oldTextJson = JSON.stringify(oldTextUnescaped).replace(/'/g, "\\'");
-    const newTextJson = JSON.stringify(newTextUnescaped).replace(/'/g, "\\'");
-    
-    return `
-      <div class="suggestion-diff" id="${id}">
-        <div class="diff-header">
-          <span class="diff-tab">📝 ${escapeHtml(tab)}${section ? ` › ${escapeHtml(section)}` : ''}</span>
-          <div class="diff-actions">
-            <button class="diff-accept" onclick="acceptSuggestion('${id}', '${escapeHtml(tab)}', ${oldTextJson}, ${newTextJson})">✓ Accept</button>
-            <button class="diff-reject" onclick="rejectSuggestion('${id}')">✕ Reject</button>
-          </div>
-        </div>
-        <div class="diff-body">
-          <div class="diff-old"><span class="diff-label">- Remove</span><pre>${oldTextUnescaped}</pre></div>
-          <div class="diff-new"><span class="diff-label">+ Add</span><pre>${newTextUnescaped}</pre></div>
-        </div>
-      </div>
-    `;
-  });
-}
 
 function acceptSuggestion(id, tab, oldText, newText) {
   const editorId = tab === 'thumbnails' ? 'thumbnails-editor' : `${tab}-editor`;
@@ -1361,7 +1371,7 @@ async function handleChatImage(file) {
   const imageUrl = uploadData.url;
   const imageHtml = `
     <div class="chat-message user">
-      <span class="sender">Nora</span>
+      <span class="sender">${escapeHtml(currentUserName)}</span>
       <div class="bubble">
         <img src="${imageUrl}" class="chat-image" alt="Uploaded image" onclick="openImagePreview('${imageUrl}')">
         <p class="image-caption">Shared an image</p>
@@ -2124,6 +2134,8 @@ async function generateTTS(text) {
 // === Init ===
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  syncLayoutHeight();
+  window.addEventListener('resize', debounce(syncLayoutHeight, 120));
   // NOTE: initEditors() is called in openVideo() after the workspace view is shown
   loadVideos();
   initResize();

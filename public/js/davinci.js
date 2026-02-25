@@ -15,6 +15,14 @@ function getEditorState() {
   return { id, name, shortName, tipsTitle, chatTitle };
 }
 
+function getUserName() {
+  if (typeof window.getCurrentUserName === 'function') {
+    const value = String(window.getCurrentUserName() || '').trim();
+    if (value) return value;
+  }
+  return 'Nora';
+}
+
 // ============ Section Switching ============
 
 function switchSection(section) {
@@ -410,9 +418,10 @@ function renderDavinciChat() {
   const container = document.getElementById('davinci-chat-messages');
   if (!davinciChatMessages || davinciChatMessages.length === 0) {
     const editor = getEditorState();
+    const userName = getUserName();
     container.innerHTML = `
       <div class="chat-welcome">
-        <p>🌺 <strong>Hey Nora!</strong> Ask me anything about ${editor.name}. I've got your ${editor.name} tips doc loaded, so I know what you already know.</p>
+        <p>🌺 <strong>Hey ${escapeHtml(userName)}!</strong> Ask me anything about ${editor.name}. I've got your ${editor.name} tips doc loaded, so I know what you already know.</p>
       </div>
     `;
     return;

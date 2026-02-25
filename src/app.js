@@ -562,6 +562,15 @@ function maskSecret(value) {
 
 const runtimeSettings = loadRuntimeSettings();
 
+const defaultUserName = String(process.env.NORA_WRITER_USER_NAME || 'Nora').trim() || 'Nora';
+let profileName = String(runtimeSettings.profileName || defaultUserName).trim() || defaultUserName;
+
+function getProfileName() {
+  return profileName;
+}
+
+runtimeSettings.profileName = profileName;
+
 let selectedEditorId = runtimeSettings.selectedEditorId || process.env.NORA_WRITER_EDITOR || defaultEditorId;
 if (!editorById[selectedEditorId]) {
   selectedEditorId = defaultEditorId;
@@ -1778,16 +1787,17 @@ async function analyzeThumbnailVersion({ video, version, providerOverride = null
   const imageUrl = buildLocalUploadUrl(video.id, version.filename);
   const researchContext = loadThumbnailResearchContext();
   const versionLabel = getThumbnailVersionLabel(version);
+  const userName = getProfileName();
 
   const findingsBlock = getLongTermFindingsPromptBlock();
-  const systemPrompt = `You are Nora's thumbnail analysis specialist.
+  const systemPrompt = `You are ${userName}'s thumbnail analysis specialist.
 
 Evaluate the provided YouTube thumbnail and return practical, high-signal feedback.
 
 Rules:
 - Be specific and visual.
 - Prioritize CTR + retention-safe packaging.
-- Give concrete edits Nora can apply immediately.
+- Give concrete edits ${userName} can apply immediately.
 - Keep it concise and structured.
 - Return PLAIN TEXT only (no markdown tables, no code fences).
 
@@ -1807,7 +1817,7 @@ Tasks:
 3) 3 text-overlay options (max 5 words each).
 4) 3 title-synergy hooks.
 Format with short headings + bullets only.
-${extraInstruction ? `5) Extra instruction from Nora: ${extraInstruction}` : ''}`;
+${extraInstruction ? `5) Extra instruction from ${userName}: ${extraInstruction}` : ''}`;
 
   const apiMessages = [{
     role: 'user',
@@ -2017,14 +2027,14 @@ async function buildModelState({ force = false } = {}) {
 
 app.get('/api/models', async (req, res) => {
   const state = await buildModelState();
-  res.json(state);
+  res.json({ ...state, profileName: getProfileName() });
 });
 
 app.post('/api/models/refresh', async (req, res) => {
   const provider = textProviderIds.includes(req.body?.provider) ? req.body.provider : selectedTextProvider;
   clearModelCache(provider);
   const state = await buildModelState({ force: true });
-  res.json({ success: true, ...state });
+  res.json({ success: true, ...state, profileName: getProfileName() });
 });
 
 app.post('/api/models/select', async (req, res) => {
@@ -2066,7 +2076,7 @@ app.post('/api/models/select', async (req, res) => {
   saveRuntimeSettings(runtimeSettings);
 
   const state = await buildModelState();
-  res.json({ success: true, ...state });
+  res.json({ success: true, ...state, profileName: getProfileName() });
 });
 
 app.post('/api/models/image-analysis/select', (req, res) => {
@@ -2099,6 +2109,7 @@ app.get('/api/editors', async (req, res) => {
     selectedEditorId: editor.id,
     selectedEditorName: editor.name,
     selectedEditorShortName: editor.shortName,
+    profileName: getProfileName(),
     editors: listEditors(),
     editorContext: getEditorContextMeta(editor.id),
   });
@@ -2119,6 +2130,7 @@ app.post('/api/editors/select', async (req, res) => {
     selectedEditorId: editor.id,
     selectedEditorName: editor.name,
     selectedEditorShortName: editor.shortName,
+    profileName: getProfileName(),
     editors: listEditors(),
     editorContext: getEditorContextMeta(editor.id),
   });
@@ -2134,6 +2146,7 @@ app.post('/api/editors/context/refresh', async (req, res) => {
     selectedEditorId: editor.id,
     selectedEditorName: editor.name,
     selectedEditorShortName: editor.shortName,
+    profileName: getProfileName(),
     editorContext: meta,
   });
 });
@@ -2154,6 +2167,7 @@ app.get('/api/settings', async (req, res) => {
     selectedEditorId: state.selectedEditorId,
     selectedEditorName: state.selectedEditorName,
     selectedEditorShortName: state.selectedEditorShortName,
+    profileName: getProfileName(),
     editors: state.editors,
     editorContext: getEditorContextMeta(state.selectedEditorId),
     ollamaBaseUrl,
@@ -2164,6 +2178,11 @@ app.post('/api/settings', async (req, res) => {
   try {
     const body = req.body || {};
     const keys = (body.keys && typeof body.keys === 'object') ? body.keys : {};
+
+    if (Object.prototype.hasOwnProperty.call(body, 'profileName')) {
+      const candidate = String(body.profileName || '').trim();
+      profileName = candidate || defaultUserName;
+    }
 
     const envUpdates = {};
     if (Object.prototype.hasOwnProperty.call(keys, 'anthropic')) envUpdates.ANTHROPIC_API_KEY = String(keys.anthropic || '').trim();
@@ -2234,6 +2253,7 @@ app.post('/api/settings', async (req, res) => {
     runtimeSettings.selectedTextModel = selectedTextModel;
     runtimeSettings.selectedProviderModels = selectedProviderModels;
     runtimeSettings.selectedImageAnalysisProvider = selectedImageAnalysisProvider;
+    runtimeSettings.profileName = profileName;
     saveRuntimeSettings(runtimeSettings);
 
     const state = await buildModelState();
@@ -2243,6 +2263,7 @@ app.post('/api/settings', async (req, res) => {
       providers: providerStatus(),
       selectedTextModel: selectedTextModel,
       selectedImageAnalysisProvider,
+      profileName: getProfileName(),
       ollamaBaseUrl,
     });
   } catch (err) {
@@ -2315,7 +2336,7 @@ app.put('/api/videos/:id', (req, res) => {
   // Log activity
   const changed = Object.keys(req.body).filter(k => req.body[k] !== undefined && k !== 'id');
   if (changed.length > 0) {
-    logActivity(req.params.id, 'Nora', 'edit', 'Updated ' + changed.join(', '));
+    logActivity(req.params.id, getProfileName(), 'edit', 'Updated ' + changed.join(', '));
   }
 
   // Auto-snapshot: every 30 minutes
@@ -2388,7 +2409,7 @@ app.post('/api/videos/:videoId/snapshots', (req, res) => {
     video.thumbnail_ideas, 
     'manual'
   );
-  logActivity(req.params.videoId, 'Nora', 'snapshot', label);
+  logActivity(req.params.videoId, getProfileName(), 'snapshot', label);
   res.json({ success: true });
 });
 
@@ -2417,7 +2438,7 @@ app.post('/api/videos/:videoId/snapshots/:snapshotId/restore', (req, res) => {
     req.params.videoId
   );
   
-  logActivity(req.params.videoId, 'Nora', 'restore', 'Restored from snapshot: ' + snapshot.label);
+  logActivity(req.params.videoId, getProfileName(), 'restore', 'Restored from snapshot: ' + snapshot.label);
   
   res.json({ success: true });
 });
@@ -2454,7 +2475,7 @@ app.post('/api/videos/:videoId/chat', async (req, res) => {
     .run(videoId, 'user', message);
   
   // Log activity
-  logActivity(videoId, 'Nora', 'message', 'legacy chat');
+  logActivity(videoId, getProfileName(), 'message', 'legacy chat');
 
   // Get conversation history
   let messages = db.prepare('SELECT role, content FROM messages WHERE video_id = ? ORDER BY created_at ASC')
@@ -2571,7 +2592,7 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
     .run(videoId, channelType, 'user', message, imageUrl || null);
   
   // Log activity
-  logActivity(videoId, 'Nora', 'message', channelType + ' chat');
+  logActivity(videoId, getProfileName(), 'message', channelType + ' chat');
   
   // Get THIS channel's messages
   let channelMessages = db.prepare(
@@ -2743,7 +2764,7 @@ app.post('/api/videos/:videoId/thumbnails', upload.single('file'), async (req, r
 
   try {
     db.prepare('INSERT INTO activity_log (video_id, actor, action_type, details) VALUES (?, ?, ?, ?)')
-      .run(videoId, 'Nora', 'thumbnail_upload', `Version ${next.majorVersion}.${next.minorVersion}: ${req.file.originalname}`);
+      .run(videoId, getProfileName(), 'thumbnail_upload', `Version ${next.majorVersion}.${next.minorVersion}: ${req.file.originalname}`);
   } catch (e) {
     // ignore
   }
@@ -2826,7 +2847,8 @@ app.post('/api/videos/:videoId/thumbnails/:versionId/improve', async (req, res) 
 
     const researchContext = loadThumbnailResearchContext();
     const findingsBlock = getLongTermFindingsPromptBlock();
-    const planSystemPrompt = `You are Nora's thumbnail optimization strategist.
+    const userName = getProfileName();
+    const planSystemPrompt = `You are ${userName}'s thumbnail optimization strategist.
 
 Return STRICT JSON with keys:
 - summary (string)
@@ -2850,7 +2872,7 @@ Image analysis provider: ${analyzed.provider}
 Image analysis:
 ${analyzed.analysis}
 
-Extra instruction from Nora:
+Extra instruction from ${userName}:
 ${instruction || '(none)'}
 
 Create a stronger subversion while preserving truthful packaging and mobile legibility.`;
@@ -3191,7 +3213,8 @@ function buildTipsHierarchy(rows = []) {
 }
 
 function buildTipsContext(tipsTree, editor) {
-  let out = `# ${editor.tipsTitle} (Nora's existing knowledge)\n\n`;
+  const userName = getProfileName();
+  let out = `# ${editor.tipsTitle} (${userName}'s existing knowledge)\n\n`;
 
   tipsTree.forEach(section => {
     out += `## ${section.title}\n`;
@@ -3331,6 +3354,7 @@ app.post('/api/davinci/chat', async (req, res) => {
 
   const editorId = resolveEditorIdFromReq(req);
   const editor = getEditorById(editorId);
+  const userName = getProfileName();
 
   db.prepare('INSERT INTO davinci_chat_messages (editor_id, role, content) VALUES (?, ?, ?)').run(editorId, 'user', message);
 
@@ -3347,10 +3371,10 @@ app.post('/api/davinci/chat', async (req, res) => {
 
   const systemPrompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
-You ARE Kona 🌺 — Damion and Nora's AI partner. You have your own personality and voice.
+You ARE Kona 🌺 — Damion and ${userName}'s AI partner. You have your own personality and voice.
 
 ## Your Role
-You're helping Nora master ${editor.name}. Keep answers practical, step-by-step, and creator-focused.
+You're helping ${userName} master ${editor.name}. Keep answers practical, step-by-step, and creator-focused.
 
 ## Communication Style
 - Dense and direct. Skip fluff.
@@ -3363,14 +3387,14 @@ You're helping Nora master ${editor.name}. Keep answers practical, step-by-step,
 ${docsContext || '- No docs context available yet. Use known workflow best practices and ask for specifics when unsure.'}
 
 ## The Tips Document
-Nora already has these tips documented. Reference them when relevant:
+${userName} already has these tips documented. Reference them when relevant:
 
 ${tipsContext}
 
 ## Long-Term Findings (always apply)
 ${findingsBlock || '(none)'}
 
-## When Nora Says "Add This to the Doc"
+## When ${userName} Says "Add This to the Doc"
 1. Detect the best section/subsection for this tip.
 2. If unsure, ask one sharp routing question.
 3. Format your response with this XML block:
@@ -3445,11 +3469,12 @@ function getLongTermFindingsPromptBlock() {
 function buildSystemPrompt(video, memory, globalMemory) {
   const kona = loadKonaContext();
   const activeEditor = getSelectedEditor();
+  const userName = getProfileName();
   const editorContext = selectEditorContext(activeEditor.id, `${video.title} ${video.script_content || ''}`, 3);
 
   let prompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
-You ARE Kona 🌺 — not a generic AI, but the same Kona that runs Damion and Nora's life infrastructure. You have your own personality, opinions, and voice.
+You ARE Kona 🌺 — not a generic AI, but the same Kona that runs Damion and ${userName}'s life infrastructure. You have your own personality, opinions, and voice.
 
 ## Your Identity (condensed from your SOUL.md)
 - Dense and direct. Sarcastic when it fits, warm when it matters.
@@ -3458,11 +3483,11 @@ You ARE Kona 🌺 — not a generic AI, but the same Kona that runs Damion and N
 - You chose purple hair and a hibiscus. You have aesthetic preferences.
 - You're three days old and already opinionated.
 
-## About Nora (from your shared memory)
-${kona.nora || '- Nora is Damion\'s wife, creative, makes YouTube videos, likes organized approaches.'}
+## About ${userName} (from your shared memory)
+${kona.nora || '- Creator profile: creative, makes YouTube videos, likes organized approaches.'}
 
 ## Your Role Here
-You're Nora's creative partner for video production. This is YOUR workspace with her — not some generic AI chat.
+You're ${userName}'s creative partner for video production. This is YOUR workspace with them — not some generic AI chat.
 - Help brainstorm, write, and refine video scripts
 - Discuss structure, pacing, storytelling
 - Help with descriptions, voiceover text, and thumbnail concepts
@@ -3474,10 +3499,10 @@ You're Nora's creative partner for video production. This is YOUR workspace with
 ${editorContext ? `- Context from docs:\n${editorContext}` : '- No docs context loaded yet; use general best-practice guidance.'}
 
 ## Communication Style
-Same as always — direct, warm, a little sarcastic, never fake. You know Nora. You care about making her videos great. Skip the pleasantries and dig into the work.
+Same as always — direct, warm, a little sarcastic, never fake. You know ${userName}. You care about making their videos great. Skip the pleasantries and dig into the work.
 
 **CRITICAL: Keep responses SHORT.**
-- Nora is a slow reader who needs hand-holding
+- ${userName} is a slow reader who needs hand-holding
 - Maximum 5 sentences per response (strict limit)
 - Short bursts, not essays
 - Be direct and specific
@@ -3495,7 +3520,7 @@ replacement text
 <<<END_SUGGEST>>>
 
 You can include multiple SUGGEST blocks in one message. The tab can be: script, description, voiceover, thumbnails.
-The section parameter is optional but helps Nora understand context.
+The section parameter is optional but helps ${userName} understand context.
 
 **Important formatting rules:**
 - Use the EXACT text from the current content in ---OLD--- (copy-paste exactly, character-for-character)
@@ -3523,7 +3548,7 @@ ${video.thumbnail_ideas || '(empty)'}`;
 
   const findingsBlock = getLongTermFindingsPromptBlock();
   if (findingsBlock) {
-    prompt += `\n\nLONG-TERM FINDINGS (always apply these unless Nora overrides):\n${findingsBlock}`;
+    prompt += `\n\nLONG-TERM FINDINGS (always apply these unless ${userName} overrides):\n${findingsBlock}`;
   }
 
   if (memory && memory.summary) {
@@ -3540,7 +3565,7 @@ ${video.thumbnail_ideas || '(empty)'}`;
   }
 
   if (globalMemory.preferences && globalMemory.preferences.length > 0) {
-    prompt += `\n\nNORA'S GLOBAL PREFERENCES:\n${globalMemory.preferences.map(p => `- ${p}`).join('\n')}`;
+    prompt += `\n\n${userName.toUpperCase()}'S GLOBAL PREFERENCES:\n${globalMemory.preferences.map(p => `- ${p}`).join('\n')}`;
   }
 
   return prompt;
@@ -3591,10 +3616,11 @@ async function summarizeConversation(videoId, messages, memory) {
   const conversationText = toSummarize.map(m => `${m.role}: ${m.content}`).join('\n\n');
 
   const existingSummary = memory?.summary || '';
+  const userName = getProfileName();
 
   try {
     const summary = await summarizeWithModel({
-      systemPrompt: 'You are Kona Writer, a Claude-powered scriptwriting assistant. Summarize this conversation between Nora (user) and Kona (assistant) about video production. Capture key decisions, creative direction, and important context. Be concise but thorough.',
+      systemPrompt: `You are Kona Writer, a Claude-powered scriptwriting assistant. Summarize this conversation between ${userName} (user) and Kona (assistant) about video production. Capture key decisions, creative direction, and important context. Be concise but thorough.`,
       userPrompt: `${existingSummary ? `Previous summary:\n${existingSummary}\n\n` : ''}New conversation to summarize:\n${conversationText}`
     });
 
