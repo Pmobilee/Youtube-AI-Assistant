@@ -86,7 +86,7 @@ body {
 .btn-sm { padding: 4px 10px; font-size: 13px; }
 
 /* === Library === */
-.library-header, .workspace-header {
+.library-header {
   display: flex; justify-content: space-between; align-items: center;
   padding: 16px 24px; border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
@@ -154,9 +154,9 @@ body {
 
 /* === Workspace === */
 .title-input {
-  font-size: 18px; font-weight: 600; border: none; background: transparent;
+  font-size: 16px; font-weight: 600; border: none; background: transparent;
   color: var(--text); font-family: var(--font); padding: 4px 8px;
-  border-radius: var(--radius); width: 300px;
+  border-radius: var(--radius); width: min(44vw, 520px);
 }
 .title-input:focus { outline: none; background: var(--bg-tertiary); }
 
@@ -921,6 +921,13 @@ body {
   flex-wrap: wrap;
 }
 
+.thumbnail-ai-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
 .thumbnail-analysis-panel {
   border: 1px solid var(--border);
   background: var(--bg-secondary);
@@ -1381,6 +1388,9 @@ body {
   .title-input { width: 150px; }
   .snapshot-panel { width: 100%; }
   .editor-toolbar { display: none; }
+  .top-nav { flex-wrap: wrap; gap: 8px; }
+  .nav-tabs, .nav-workspace-controls { width: 100%; }
+  .nav-logo-image { width: 140px; height: 32px; }
 }
 
 /* === SEO Panel === */
@@ -1693,9 +1703,9 @@ body {
 /* === Top Navigation === */
 .top-nav {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 12px 24px;
+  gap: 16px;
+  padding: 8px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -1706,12 +1716,14 @@ body {
 .nav-logo {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .nav-logo-image {
-  width: 56px;
-  height: 56px;
+  width: 180px;
+  height: 40px;
   object-fit: contain;
+  object-position: left center;
   background: transparent;
   border: none;
   padding: 0;
@@ -1721,6 +1733,8 @@ body {
 .nav-tabs {
   display: flex;
   gap: 8px;
+  flex: 1;
+  min-width: 0;
 }
 
 .nav-tab {
@@ -1746,10 +1760,25 @@ body {
   color: var(--accent);
 }
 
+.nav-workspace-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-workspace-controls .title-input {
+  flex: 1;
+  min-width: 160px;
+  max-width: none;
+}
+
 .nav-actions {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-left: auto;
 }
 
 .top-status {

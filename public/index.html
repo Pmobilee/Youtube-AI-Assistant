@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>YAA</title>
+  <link rel="icon" type="image/png" href="/assets/yaa-logo.png">
+  <link rel="apple-touch-icon" href="/assets/yaa-logo.png">
   <link rel="stylesheet" href="/css/style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -23,12 +25,22 @@
       <div class="nav-logo">
         <img src="/assets/yaa-logo.png" alt="YAA logo" class="nav-logo-image" />
       </div>
-      <div class="nav-tabs">
+      <div class="nav-tabs" id="global-nav-tabs">
         <button class="nav-tab active" data-section="projects" onclick="switchSection('projects')">📹 Projects</button>
         <button id="nav-editor-chat-tab" class="nav-tab" data-section="davinci-chat" onclick="switchSection('davinci-chat')">💬 DaVinci Chat</button>
         <button id="nav-editor-tips-tab" class="nav-tab" data-section="tips" onclick="switchSection('tips')">📚 DaVinci Tips & Tricks</button>
         <button class="nav-tab" data-section="findings" onclick="switchSection('findings')">🧠 Long-Term Findings</button>
         <button class="nav-tab" data-section="settings" onclick="switchSection('settings')">⚙️ Settings</button>
+      </div>
+      <div id="nav-workspace-controls" class="nav-workspace-controls hidden">
+        <button id="back-btn" class="btn btn-ghost btn-sm">← Back</button>
+        <input id="video-title" class="title-input" placeholder="Video Title" />
+        <select id="video-status" class="status-select">
+          <option value="draft">📋 Draft</option>
+          <option value="in-progress">✏️ In Progress</option>
+          <option value="complete">✅ Complete</option>
+        </select>
+        <span id="save-indicator" class="save-indicator">Saved</span>
       </div>
       <div class="nav-actions">
         <button id="theme-toggle-nav" class="btn btn-icon" title="Toggle dark mode">🌙</button>
@@ -67,22 +79,6 @@
 
     <!-- Workspace View -->
     <div id="workspace-view" class="view">
-      <header class="workspace-header">
-        <div class="header-left">
-          <button id="back-btn" class="btn btn-ghost">← Back</button>
-          <input id="video-title" class="title-input" placeholder="Video Title" />
-          <select id="video-status" class="status-select">
-            <option value="draft">📋 Draft</option>
-            <option value="in-progress">✏️ In Progress</option>
-            <option value="complete">✅ Complete</option>
-          </select>
-        </div>
-        <div class="header-right">
-          <span id="save-indicator" class="save-indicator">Saved</span>
-          <button id="theme-toggle-ws" class="btn btn-icon" title="Toggle dark mode">🌙</button>
-        </div>
-      </header>
-
       <div class="workspace-container">
         <!-- Left Pane: Chat -->
         <div class="pane chat-pane" id="chat-pane">
@@ -216,11 +212,13 @@
                   <textarea id="thumb-notes" placeholder="Notes for this version..."></textarea>
                 </div>
                 <div class="thumbnail-ai-controls">
-                  <textarea id="thumb-improve-instruction" placeholder="Optional: what to optimize (tone, emotion, style, title hook, etc.)"></textarea>
+                  <textarea id="thumb-improve-instruction" placeholder="Optional note: extra optimization goals (this is combined with current thumbnail notes + latest analysis)"></textarea>
                   <div class="thumbnail-ai-buttons">
                     <button id="thumb-analyze-btn" class="toolbar-btn">🔬 Analyze Selected</button>
-                    <button id="thumb-generate-btn" class="toolbar-btn">✨ Generate AI Subversion</button>
+                    <button id="thumb-generate-btn" class="toolbar-btn">✨ Generate AI Subversion (uses notes + optional note)</button>
+                    <button id="thumb-generate-fresh-btn" class="toolbar-btn">🆕 Generate Fresh Thumbnail (from scratch)</button>
                   </div>
+                  <div class="thumbnail-ai-hint">Subversion generation uses: selected version notes + optional note above + latest analysis + long-term findings.</div>
                 </div>
                 <div class="thumbnail-analysis-panel" id="thumb-analysis-output">
                   <em>No analysis yet. Upload/select a thumbnail and run analysis.</em>
@@ -365,7 +363,19 @@
               <span>Image analysis provider</span>
               <select id="settings-image-analysis-select" class="status-select"></select>
             </label>
-            <div id="settings-model-hint" class="settings-hint">Pick editor + provider + model, then Save Settings.</div>
+            <label class="settings-field">
+              <span>Image analysis model</span>
+              <select id="settings-image-analysis-model-select" class="status-select"></select>
+            </label>
+            <label class="settings-field">
+              <span>Image generation provider</span>
+              <select id="settings-image-generation-select" class="status-select"></select>
+            </label>
+            <label class="settings-field">
+              <span>Image generation model</span>
+              <select id="settings-image-generation-model-select" class="status-select"></select>
+            </label>
+            <div id="settings-model-hint" class="settings-hint">Image provider lists are filtered by configured API keys.</div>
           </section>
 
           <section class="settings-card">

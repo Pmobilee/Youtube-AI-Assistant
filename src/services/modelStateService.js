@@ -8,6 +8,12 @@ async function buildModelState(deps, { force = false } = {}) {
     imageGenerationModel,
     imageAnalysisProviderOptions,
     selectedImageAnalysisProvider,
+    selectedImageAnalysisModel,
+    imageGenerationProviderOptions,
+    selectedImageGenerationProvider,
+    selectedImageGenerationModel,
+    getImageAnalysisModels,
+    getImageGenerationModels,
     listEditors,
     getEditorContextMeta,
   } = deps;
@@ -26,11 +32,21 @@ async function buildModelState(deps, { force = false } = {}) {
     selectedModel: ensured.selectedModel,
     models: ensured.models,
     textProviders: providerStatus(),
-    imageProvider: 'openrouter',
+
+    imageProvider: selectedImageGenerationProvider,
     imageModels: imageModelCandidates,
     imageGenerationModel,
+
     imageAnalysisProviders: imageAnalysisProviderOptions,
     selectedImageAnalysisProvider,
+    selectedImageAnalysisModel,
+    imageAnalysisModels: getImageAnalysisModels(selectedImageAnalysisProvider),
+
+    imageGenerationProviders: imageGenerationProviderOptions,
+    selectedImageGenerationProvider,
+    selectedImageGenerationModel,
+    imageGenerationModels: getImageGenerationModels(selectedImageGenerationProvider),
+
     selectedEditorId: editor.id,
     selectedEditorName: editor.name,
     selectedEditorShortName: editor.shortName,

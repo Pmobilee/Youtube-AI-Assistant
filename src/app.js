@@ -802,6 +802,7 @@ let openAiClient = null;
 let xaiClient = null;
 let openRouterClient = null;
 let geminiApiKey = '';
+let xaiApiKey = '';
 let openRouterApiKey = '';
 let ollamaApiKey = '';
 let openRouterBaseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
@@ -812,7 +813,7 @@ let ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 function refreshApiClients() {
   const anthropicApiKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
   const openAiApiKey = String(process.env.OPENAI_API_KEY || '').trim();
-  const xaiApiKey = String(process.env.XAI_API_KEY || '').trim();
+  xaiApiKey = String(process.env.XAI_API_KEY || '').trim();
   geminiApiKey = String(process.env.GEMINI_API_KEY || '').trim();
 
   openRouterApiKey = String(process.env.OPENROUTER_API_KEY || '').trim();
@@ -830,17 +831,154 @@ function refreshApiClients() {
 
 refreshApiClients();
 
-const imageModelCandidates = parseCsv(
-  process.env.NORA_WRITER_IMAGE_MODELS || process.env.NORA_WRITER_VISION_MODEL,
-  ['google/gemini-2.5-pro', 'google/gemini-2.5-flash-image-preview', 'google/gemini-2.5-flash']
+const openRouterImageModelCandidates = parseCsv(
+  process.env.NORA_WRITER_OPENROUTER_IMAGE_MODELS
+    || process.env.NORA_WRITER_IMAGE_MODELS
+    || process.env.NORA_WRITER_VISION_MODEL,
+  ['google/gemini-2.5-flash-image-preview', 'google/gemini-2.5-pro', 'x-ai/grok-2-vision-1212']
 );
 
-const imageGenerationModel = process.env.NORA_WRITER_NANOBANANA_MODEL || imageModelCandidates[0] || 'google/gemini-2.5-pro';
-const imageAnalysisProviderOptions = ['claude', 'nanobanana'];
-let selectedImageAnalysisProvider = runtimeSettings.selectedImageAnalysisProvider || process.env.NORA_WRITER_IMAGE_ANALYSIS_PROVIDER || 'claude';
-if (!imageAnalysisProviderOptions.includes(selectedImageAnalysisProvider)) {
-  selectedImageAnalysisProvider = 'claude';
+const geminiImageModelCandidates = parseCsv(
+  process.env.NORA_WRITER_GEMINI_IMAGE_MODELS,
+  ['gemini-2.5-flash-image-preview', 'gemini-2.5-pro']
+);
+
+const xaiImageModelCandidates = parseCsv(
+  process.env.NORA_WRITER_XAI_IMAGE_MODELS,
+  ['grok-2-vision-1212']
+);
+
+const claudeImageModelCandidates = parseCsv(
+  process.env.NORA_WRITER_CLAUDE_IMAGE_MODELS,
+  providerFallbackModels.anthropic
+);
+
+const imageModelCandidates = openRouterImageModelCandidates;
+
+const imageAnalysisProviderCatalog = [
+  { id: 'claude', label: 'Claude Vision', requiresProvider: 'anthropic' },
+  { id: 'nanobanana', label: 'Nanobanana Vision (OpenRouter)', requiresProvider: 'openrouter' },
+  { id: 'grok-vision', label: 'Grok Vision (xAI)', requiresProvider: 'xai' },
+  { id: 'gemini', label: 'Gemini Vision', requiresProvider: 'gemini' },
+  { id: 'openrouter', label: 'OpenRouter Vision', requiresProvider: 'openrouter' },
+];
+
+const imageGenerationProviderCatalog = [
+  { id: 'nanobanana', label: 'Nanobanana (OpenRouter)', requiresProvider: 'openrouter' },
+  { id: 'grok-vision', label: 'Grok Vision (xAI)', requiresProvider: 'xai' },
+  { id: 'gemini', label: 'Gemini Image', requiresProvider: 'gemini' },
+  { id: 'openrouter', label: 'OpenRouter Image', requiresProvider: 'openrouter' },
+];
+
+let openRouterImageModels = [...openRouterImageModelCandidates];
+
+function imageProviderLabel(providerId) {
+  const all = [...imageAnalysisProviderCatalog, ...imageGenerationProviderCatalog];
+  const row = all.find(entry => entry.id === providerId);
+  return row?.label || providerId;
 }
+
+function imageProviderRequires(providerId, mode = 'analysis') {
+  const source = mode === 'generation' ? imageGenerationProviderCatalog : imageAnalysisProviderCatalog;
+  return source.find(entry => entry.id === providerId)?.requiresProvider || null;
+}
+
+function isImageProviderConfigured(providerId, mode = 'analysis') {
+  const requires = imageProviderRequires(providerId, mode);
+  if (!requires) return false;
+  return providerIsConfigured(requires);
+}
+
+function getImageAnalysisModels(provider = 'claude') {
+  const normalized = String(provider || '').trim();
+  if (!normalized) return [];
+  if (normalized === 'claude') return claudeImageModelCandidates;
+  if (normalized === 'grok-vision') return xaiImageModelCandidates;
+  if (normalized === 'gemini') return geminiImageModelCandidates;
+  return openRouterImageModels.length ? openRouterImageModels : openRouterImageModelCandidates;
+}
+
+function getImageGenerationModels(provider = 'nanobanana') {
+  const normalized = String(provider || '').trim();
+  if (!normalized) return [];
+  if (normalized === 'grok-vision') return xaiImageModelCandidates;
+  if (normalized === 'gemini') return geminiImageModelCandidates;
+  return openRouterImageModels.length ? openRouterImageModels : openRouterImageModelCandidates;
+}
+
+function getAvailableImageAnalysisProviders() {
+  return imageAnalysisProviderCatalog
+    .filter(entry => isImageProviderConfigured(entry.id, 'analysis'))
+    .map(entry => entry.id);
+}
+
+function getAvailableImageGenerationProviders() {
+  return imageGenerationProviderCatalog
+    .filter(entry => isImageProviderConfigured(entry.id, 'generation'))
+    .map(entry => entry.id);
+}
+
+let imageAnalysisProviderOptions = getAvailableImageAnalysisProviders();
+let imageGenerationProviderOptions = getAvailableImageGenerationProviders();
+
+let selectedImageAnalysisProvider = runtimeSettings.selectedImageAnalysisProvider || process.env.NORA_WRITER_IMAGE_ANALYSIS_PROVIDER || imageAnalysisProviderOptions[0] || '';
+if (!imageAnalysisProviderOptions.includes(selectedImageAnalysisProvider)) {
+  selectedImageAnalysisProvider = imageAnalysisProviderOptions[0] || '';
+}
+
+let selectedImageAnalysisModel = runtimeSettings.selectedImageAnalysisModel
+  || process.env.NORA_WRITER_IMAGE_ANALYSIS_MODEL
+  || getImageAnalysisModels(selectedImageAnalysisProvider)[0]
+  || '';
+
+let selectedImageGenerationProvider = runtimeSettings.selectedImageGenerationProvider
+  || process.env.NORA_WRITER_IMAGE_GENERATION_PROVIDER
+  || imageGenerationProviderOptions[0]
+  || '';
+if (!imageGenerationProviderOptions.includes(selectedImageGenerationProvider)) {
+  selectedImageGenerationProvider = imageGenerationProviderOptions[0] || '';
+}
+
+let selectedImageGenerationModel = runtimeSettings.selectedImageGenerationModel
+  || process.env.NORA_WRITER_IMAGE_GENERATION_MODEL
+  || process.env.NORA_WRITER_NANOBANANA_MODEL
+  || getImageGenerationModels(selectedImageGenerationProvider)[0]
+  || '';
+
+let imageGenerationModel = selectedImageGenerationModel || openRouterImageModelCandidates[0] || 'google/gemini-2.5-flash-image-preview';
+
+function normalizeImageProviderSelections({ persist = true } = {}) {
+  imageAnalysisProviderOptions = getAvailableImageAnalysisProviders();
+  imageGenerationProviderOptions = getAvailableImageGenerationProviders();
+
+  if (!imageAnalysisProviderOptions.includes(selectedImageAnalysisProvider)) {
+    selectedImageAnalysisProvider = imageAnalysisProviderOptions[0] || '';
+  }
+
+  const analysisModels = getImageAnalysisModels(selectedImageAnalysisProvider);
+  if (!analysisModels.includes(selectedImageAnalysisModel)) {
+    selectedImageAnalysisModel = analysisModels[0] || '';
+  }
+
+  if (!imageGenerationProviderOptions.includes(selectedImageGenerationProvider)) {
+    selectedImageGenerationProvider = imageGenerationProviderOptions[0] || '';
+  }
+
+  const generationModels = getImageGenerationModels(selectedImageGenerationProvider);
+  if (!generationModels.includes(selectedImageGenerationModel)) {
+    selectedImageGenerationModel = generationModels[0] || '';
+  }
+
+  imageGenerationModel = selectedImageGenerationModel || generationModels[0] || imageGenerationModel;
+
+  runtimeSettings.selectedImageAnalysisProvider = selectedImageAnalysisProvider;
+  runtimeSettings.selectedImageAnalysisModel = selectedImageAnalysisModel;
+  runtimeSettings.selectedImageGenerationProvider = selectedImageGenerationProvider;
+  runtimeSettings.selectedImageGenerationModel = selectedImageGenerationModel;
+  if (persist) saveRuntimeSettings(runtimeSettings);
+}
+
+normalizeImageProviderSelections({ persist: false });
 
 const thumbnailResearchPath = process.env.NORA_WRITER_THUMBNAIL_RESEARCH_PATH || path.join(dataDir, 'thumbnail_research_bible.md');
 const thumbnailResearchCache = { text: '', loadedAt: 0 };
@@ -875,18 +1013,87 @@ const modelCache = {
   ollama: { models: [], fetchedAt: 0 },
 };
 
+const imageModelCache = {
+  openrouter: { models: [], fetchedAt: 0 },
+};
+
+function isImageModelRow(row) {
+  const bucket = [];
+  if (Array.isArray(row?.modalities)) bucket.push(...row.modalities);
+  if (Array.isArray(row?.architecture?.input_modalities)) bucket.push(...row.architecture.input_modalities);
+  if (Array.isArray(row?.architecture?.output_modalities)) bucket.push(...row.architecture.output_modalities);
+  if (typeof row?.architecture?.modality === 'string') bucket.push(row.architecture.modality);
+
+  const hay = `${bucket.join(' ')} ${row?.id || ''} ${row?.name || ''}`.toLowerCase();
+  return hay.includes('image') || hay.includes('vision');
+}
+
+async function fetchOpenRouterImageModelIds() {
+  if (!openRouterApiKey) return [];
+  const url = `${openRouterBaseUrl.replace(/\/$/, '')}/models`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${openRouterApiKey}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenRouter model list failed (${response.status})`);
+  }
+
+  const payload = await response.json();
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  return uniqStrings(rows.filter(isImageModelRow).map(row => row?.id).filter(Boolean));
+}
+
+async function refreshOpenRouterImageModels({ force = false } = {}) {
+  const cache = imageModelCache.openrouter || { models: [], fetchedAt: 0 };
+  const now = Date.now();
+  const ttlMs = 10 * 60 * 1000;
+
+  if (!force && cache.models.length > 0 && (now - cache.fetchedAt) < ttlMs) {
+    openRouterImageModels = cache.models;
+    return openRouterImageModels;
+  }
+
+  try {
+    const discovered = await fetchOpenRouterImageModelIds();
+    const merged = uniqStrings([...(discovered || []), ...openRouterImageModelCandidates]);
+    cache.models = merged;
+    cache.fetchedAt = now;
+    imageModelCache.openrouter = cache;
+    openRouterImageModels = merged.length ? merged : openRouterImageModelCandidates;
+    return openRouterImageModels;
+  } catch (err) {
+    console.warn('OpenRouter image model scan failed:', err.message);
+    if (!cache.models.length) cache.models = openRouterImageModelCandidates;
+    cache.fetchedAt = now;
+    imageModelCache.openrouter = cache;
+    openRouterImageModels = cache.models;
+    return openRouterImageModels;
+  }
+}
+
+refreshOpenRouterImageModels().catch(err => console.warn('OpenRouter image model refresh skipped:', err.message));
+
 function clearModelCache(provider = null) {
   if (!provider) {
     Object.keys(modelCache).forEach(key => {
       modelCache[key].models = [];
       modelCache[key].fetchedAt = 0;
     });
+    imageModelCache.openrouter = { models: [], fetchedAt: 0 };
     return;
   }
 
   if (modelCache[provider]) {
     modelCache[provider].models = [];
     modelCache[provider].fetchedAt = 0;
+  }
+
+  if (provider === 'openrouter') {
+    imageModelCache.openrouter = { models: [], fetchedAt: 0 };
   }
 }
 
@@ -1124,8 +1331,8 @@ async function ensureSelectedTextModel({ provider = selectedTextProvider, force 
 }
 
 console.log(`✓ YouTube AI Assistant text provider: ${selectedTextProvider} | model=${selectedTextModel}`);
-console.log(`✓ YouTube AI Assistant image provider: OpenRouter | models=${imageModelCandidates.join(', ')}`);
-console.log(`✓ YouTube AI Assistant image-analysis provider: ${selectedImageAnalysisProvider}`);
+console.log(`✓ YouTube AI Assistant image-analysis provider: ${selectedImageAnalysisProvider} | model=${selectedImageAnalysisModel}`);
+console.log(`✓ YouTube AI Assistant image-generation provider: ${selectedImageGenerationProvider} | model=${selectedImageGenerationModel}`);
 
 function toOpenAIMessages(systemPrompt, apiMessages) {
   const normalized = (apiMessages || []).map(m => {
@@ -1588,13 +1795,41 @@ async function runProviderWithModelFallback({ provider, systemPrompt, apiMessage
   throw lastErr || new Error(`All configured ${normalizedProvider} text models failed.`);
 }
 
-async function streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText }) {
-  if (!openRouterClient) {
-    throw new Error('OPENROUTER_API_KEY is missing for image analysis/generation.');
+async function streamAnthropicVisionResponse({ systemPrompt, apiMessages, onText, modelOverride = '' }) {
+  if (!anthropicClient) {
+    throw new Error(providerMissingKeyError('anthropic'));
   }
 
+  const models = uniqStrings([
+    String(modelOverride || '').trim(),
+    ...getImageAnalysisModels('claude'),
+  ]).filter(Boolean);
+
   let lastErr = null;
-  for (const model of imageModelCandidates) {
+  for (const model of models) {
+    try {
+      return await streamAnthropicTextResponse({ systemPrompt, apiMessages, onText, model });
+    } catch (err) {
+      lastErr = err;
+      console.warn(`Claude vision model ${model} failed:`, err.message);
+    }
+  }
+
+  throw lastErr || new Error('All configured Claude vision models failed.');
+}
+
+async function streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText, modelOverride = '' }) {
+  if (!openRouterClient) {
+    throw new Error(providerMissingKeyError('openrouter'));
+  }
+
+  const models = uniqStrings([
+    String(modelOverride || '').trim(),
+    ...getImageAnalysisModels('openrouter'),
+  ]).filter(Boolean);
+
+  let lastErr = null;
+  for (const model of models) {
     try {
       return await streamOpenAICompatibleResponse({
         client: openRouterClient,
@@ -1606,11 +1841,64 @@ async function streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onTex
       });
     } catch (err) {
       lastErr = err;
-      console.warn(`OpenRouter image model ${model} failed:`, err.message);
+      console.warn(`OpenRouter vision model ${model} failed:`, err.message);
     }
   }
 
-  throw lastErr || new Error('All configured OpenRouter image models failed.');
+  throw lastErr || new Error('All configured OpenRouter vision models failed.');
+}
+
+async function streamXaiVisionResponse({ systemPrompt, apiMessages, onText, modelOverride = '' }) {
+  if (!xaiClient) {
+    throw new Error(providerMissingKeyError('xai'));
+  }
+
+  const models = uniqStrings([
+    String(modelOverride || '').trim(),
+    ...getImageAnalysisModels('grok-vision'),
+  ]).filter(Boolean);
+
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      return await streamOpenAICompatibleResponse({
+        client: xaiClient,
+        provider: 'xai',
+        model,
+        systemPrompt,
+        apiMessages,
+        onText,
+      });
+    } catch (err) {
+      lastErr = err;
+      console.warn(`xAI vision model ${model} failed:`, err.message);
+    }
+  }
+
+  throw lastErr || new Error('All configured Grok vision models failed.');
+}
+
+async function runGeminiVisionResponse({ systemPrompt, apiMessages, onText, modelOverride = '' }) {
+  if (!geminiApiKey) {
+    throw new Error(providerMissingKeyError('gemini'));
+  }
+
+  const models = uniqStrings([
+    String(modelOverride || '').trim(),
+    ...getImageAnalysisModels('gemini'),
+  ]).filter(Boolean);
+
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      return await runGeminiTextResponse({ model, systemPrompt, apiMessages, onText });
+    } catch (err) {
+      lastErr = err;
+      console.warn(`Gemini vision model ${model} failed:`, err.message);
+    }
+  }
+
+  throw lastErr || new Error('All configured Gemini vision models failed.');
 }
 
 async function runClaudeWithModelFallback({ systemPrompt, apiMessages, onText, maxModels = 6 }) {
@@ -1624,14 +1912,24 @@ async function runClaudeWithModelFallback({ systemPrompt, apiMessages, onText, m
   });
 }
 
-async function runImageAnalysisResponse({ systemPrompt, apiMessages, onText, providerOverride = null }) {
+async function runImageAnalysisResponse({ systemPrompt, apiMessages, onText, providerOverride = null, modelOverride = null }) {
   const provider = providerOverride || selectedImageAnalysisProvider;
-  if (provider === 'nanobanana') {
-    return streamOpenRouterVisionResponse({ systemPrompt, apiMessages, onText });
+  const model = String(modelOverride || selectedImageAnalysisModel || '').trim();
+  const converted = convertLocalImageUrlsToBase64(apiMessages);
+
+  if (provider === 'nanobanana' || provider === 'openrouter') {
+    return streamOpenRouterVisionResponse({ systemPrompt, apiMessages: converted, onText, modelOverride: model });
   }
 
-  const converted = convertLocalImageUrlsToBase64(apiMessages);
-  return runClaudeWithModelFallback({ systemPrompt, apiMessages: converted, onText, maxModels: 6 });
+  if (provider === 'grok-vision') {
+    return streamXaiVisionResponse({ systemPrompt, apiMessages: converted, onText, modelOverride: model });
+  }
+
+  if (provider === 'gemini') {
+    return runGeminiVisionResponse({ systemPrompt, apiMessages: converted, onText, modelOverride: model });
+  }
+
+  return streamAnthropicVisionResponse({ systemPrompt, apiMessages: converted, onText, modelOverride: model });
 }
 
 async function generateResponse({ systemPrompt, apiMessages, onText }) {
@@ -1738,19 +2036,19 @@ function extractJsonFromText(text) {
   return null;
 }
 
-async function generateImageWithNanobanana(prompt) {
+async function generateImageWithOpenRouter(prompt, model) {
   if (!openRouterApiKey) {
-    throw new Error('OPENROUTER_API_KEY is missing for nanobanana image generation.');
+    throw new Error(providerMissingKeyError('openrouter'));
   }
 
-  const res = await fetch(`${openRouterBaseUrl}/images/generations`, {
+  const res = await fetch(`${openRouterBaseUrl.replace(/\/$/, '')}/images/generations`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${openRouterApiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: imageGenerationModel,
+      model,
       prompt,
       size: '1280x720',
       n: 1,
@@ -1759,13 +2057,13 @@ async function generateImageWithNanobanana(prompt) {
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Nanobanana generation failed (${res.status}): ${body.slice(0, 400)}`);
+    throw new Error(`OpenRouter image generation failed (${res.status}): ${body.slice(0, 400)}`);
   }
 
   const payload = await res.json();
   const first = payload?.data?.[0] || null;
   if (!first) {
-    throw new Error('Nanobanana returned no images.');
+    throw new Error('OpenRouter returned no images.');
   }
 
   if (first.b64_json) {
@@ -1780,11 +2078,109 @@ async function generateImageWithNanobanana(prompt) {
     return Buffer.from(await imgRes.arrayBuffer());
   }
 
-  throw new Error('Nanobanana response had no b64_json/url image payload.');
+  throw new Error('OpenRouter response had no b64_json/url image payload.');
 }
 
-async function analyzeThumbnailVersion({ video, version, providerOverride = null, extraInstruction = '' }) {
+async function generateImageWithGemini(prompt, model) {
+  if (!geminiApiKey) {
+    throw new Error(providerMissingKeyError('gemini'));
+  }
+
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.7,
+      responseModalities: ['IMAGE'],
+    },
+  };
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini image generation failed (${res.status}): ${errText.slice(0, 240)}`);
+  }
+
+  const payload = await res.json();
+  const parts = payload?.candidates?.[0]?.content?.parts || [];
+  const imagePart = parts.find(part => part?.inlineData?.data);
+  if (!imagePart) {
+    throw new Error('Gemini returned no image data.');
+  }
+
+  return Buffer.from(imagePart.inlineData.data, 'base64');
+}
+
+async function generateImageWithXai(prompt, model) {
+  if (!xaiApiKey) {
+    throw new Error(providerMissingKeyError('xai'));
+  }
+
+  const res = await fetch(`${xaiBaseUrl.replace(/\/$/, '')}/images/generations`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${xaiApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      prompt,
+      size: '1280x720',
+      n: 1,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`xAI image generation failed (${res.status}): ${body.slice(0, 400)}`);
+  }
+
+  const payload = await res.json();
+  const first = payload?.data?.[0] || null;
+  if (!first) {
+    throw new Error('xAI returned no images.');
+  }
+
+  if (first.b64_json) {
+    return Buffer.from(first.b64_json, 'base64');
+  }
+
+  if (first.url) {
+    const imgRes = await fetch(first.url);
+    if (!imgRes.ok) {
+      throw new Error(`Failed to download generated image: ${imgRes.status}`);
+    }
+    return Buffer.from(await imgRes.arrayBuffer());
+  }
+
+  throw new Error('xAI response had no b64_json/url image payload.');
+}
+
+async function generateImageWithProvider(prompt, provider, model) {
+  const normalized = String(provider || '').trim();
+  const chosenModel = String(model || '').trim() || getImageGenerationModels(normalized)[0] || imageGenerationModel;
+
+  if (normalized === 'gemini') {
+    return generateImageWithGemini(prompt, chosenModel);
+  }
+
+  if (normalized === 'grok-vision') {
+    return generateImageWithXai(prompt, chosenModel);
+  }
+
+  return generateImageWithOpenRouter(prompt, chosenModel);
+}
+
+async function analyzeThumbnailVersion({ video, version, providerOverride = null, modelOverride = null, extraInstruction = '' }) {
   const provider = providerOverride || selectedImageAnalysisProvider;
+  const model = modelOverride || selectedImageAnalysisModel;
   const imageUrl = buildLocalUploadUrl(video.id, version.filename);
   const researchContext = loadThumbnailResearchContext();
   const versionLabel = getThumbnailVersionLabel(version);
@@ -1833,6 +2229,7 @@ ${extraInstruction ? `5) Extra instruction from ${userName}: ${extraInstruction}
     apiMessages,
     onText: null,
     providerOverride: provider,
+    modelOverride: model,
   });
 
   return { analysis, provider, imageUrl, versionLabel };
@@ -2012,6 +2409,7 @@ async function compactDavinciContext(keepRecent = 20, editorId = selectedEditorI
 // ============ API ROUTES ============
 
 async function buildModelState({ force = false } = {}) {
+  normalizeImageProviderSelections({ persist: false });
   return buildModelStateService({
     ensureSelectedTextModel,
     selectedTextProvider,
@@ -2021,6 +2419,12 @@ async function buildModelState({ force = false } = {}) {
     imageGenerationModel,
     imageAnalysisProviderOptions,
     selectedImageAnalysisProvider,
+    selectedImageAnalysisModel,
+    imageGenerationProviderOptions,
+    selectedImageGenerationProvider,
+    selectedImageGenerationModel,
+    getImageAnalysisModels,
+    getImageGenerationModels,
     listEditors,
     getEditorContextMeta,
   }, { force });
@@ -2034,6 +2438,8 @@ app.get('/api/models', async (req, res) => {
 app.post('/api/models/refresh', async (req, res) => {
   const provider = textProviderIds.includes(req.body?.provider) ? req.body.provider : selectedTextProvider;
   clearModelCache(provider);
+  await refreshOpenRouterImageModels({ force: true }).catch(() => {});
+  normalizeImageProviderSelections({ persist: false });
   const state = await buildModelState({ force: true });
   res.json({ success: true, ...state, profileName: getProfileName() });
 });
@@ -2080,25 +2486,80 @@ app.post('/api/models/select', async (req, res) => {
   res.json({ success: true, ...state, profileName: getProfileName() });
 });
 
-app.post('/api/models/image-analysis/select', (req, res) => {
-  const { provider } = req.body || {};
-  if (!provider || !imageAnalysisProviderOptions.includes(provider)) {
+app.post('/api/models/image-analysis/select', async (req, res) => {
+  const { provider, model } = req.body || {};
+  normalizeImageProviderSelections({ persist: false });
+
+  const nextProvider = String(provider || selectedImageAnalysisProvider || '').trim();
+  if (!nextProvider || !imageAnalysisProviderOptions.includes(nextProvider)) {
     return res.status(400).json({
       error: 'Invalid image-analysis provider',
       providers: imageAnalysisProviderOptions,
       selectedImageAnalysisProvider,
     });
   }
+  if (!isImageProviderConfigured(nextProvider, 'analysis')) {
+    return res.status(400).json({
+      error: `Image-analysis provider ${nextProvider} is not configured`,
+      providers: imageAnalysisProviderOptions,
+      selectedImageAnalysisProvider,
+    });
+  }
 
-  selectedImageAnalysisProvider = provider;
+  selectedImageAnalysisProvider = nextProvider;
+  const models = getImageAnalysisModels(selectedImageAnalysisProvider);
+  const requestedModel = String(model || '').trim();
+  if (requestedModel && models.includes(requestedModel)) {
+    selectedImageAnalysisModel = requestedModel;
+  } else if (!models.includes(selectedImageAnalysisModel)) {
+    selectedImageAnalysisModel = models[0] || '';
+  }
+
+  normalizeImageProviderSelections({ persist: false });
   runtimeSettings.selectedImageAnalysisProvider = selectedImageAnalysisProvider;
+  runtimeSettings.selectedImageAnalysisModel = selectedImageAnalysisModel;
   saveRuntimeSettings(runtimeSettings);
 
-  res.json({
-    success: true,
-    selectedImageAnalysisProvider,
-    providers: imageAnalysisProviderOptions,
-  });
+  const state = await buildModelState();
+  res.json({ success: true, ...state, profileName: getProfileName() });
+});
+
+app.post('/api/models/image-generation/select', async (req, res) => {
+  const { provider, model } = req.body || {};
+  normalizeImageProviderSelections({ persist: false });
+
+  const nextProvider = String(provider || selectedImageGenerationProvider || '').trim();
+  if (!nextProvider || !imageGenerationProviderOptions.includes(nextProvider)) {
+    return res.status(400).json({
+      error: 'Invalid image-generation provider',
+      providers: imageGenerationProviderOptions,
+      selectedImageGenerationProvider,
+    });
+  }
+  if (!isImageProviderConfigured(nextProvider, 'generation')) {
+    return res.status(400).json({
+      error: `Image-generation provider ${nextProvider} is not configured`,
+      providers: imageGenerationProviderOptions,
+      selectedImageGenerationProvider,
+    });
+  }
+
+  selectedImageGenerationProvider = nextProvider;
+  const models = getImageGenerationModels(selectedImageGenerationProvider);
+  const requestedModel = String(model || '').trim();
+  if (requestedModel && models.includes(requestedModel)) {
+    selectedImageGenerationModel = requestedModel;
+  } else if (!models.includes(selectedImageGenerationModel)) {
+    selectedImageGenerationModel = models[0] || '';
+  }
+
+  normalizeImageProviderSelections({ persist: false });
+  runtimeSettings.selectedImageGenerationProvider = selectedImageGenerationProvider;
+  runtimeSettings.selectedImageGenerationModel = selectedImageGenerationModel;
+  saveRuntimeSettings(runtimeSettings);
+
+  const state = await buildModelState();
+  res.json({ success: true, ...state, profileName: getProfileName() });
 });
 
 app.get('/api/editors', async (req, res) => {
@@ -2164,7 +2625,13 @@ app.get('/api/settings', async (req, res) => {
     selectedTextModel: state.selectedModel,
     availableModels: state.models,
     selectedImageAnalysisProvider,
+    selectedImageAnalysisModel,
     imageAnalysisProviders: imageAnalysisProviderOptions,
+    imageAnalysisModels: getImageAnalysisModels(selectedImageAnalysisProvider),
+    selectedImageGenerationProvider,
+    selectedImageGenerationModel,
+    imageGenerationProviders: imageGenerationProviderOptions,
+    imageGenerationModels: getImageGenerationModels(selectedImageGenerationProvider),
     selectedEditorId: state.selectedEditorId,
     selectedEditorName: state.selectedEditorName,
     selectedEditorShortName: state.selectedEditorShortName,
@@ -2202,6 +2669,8 @@ app.post('/api/settings', async (req, res) => {
       updateEnvFile(envUpdates);
       refreshApiClients();
       clearModelCache();
+      await refreshOpenRouterImageModels({ force: true }).catch(() => {});
+      normalizeImageProviderSelections();
     }
 
     const requestedEditorId = normalizeEditorId(body.selectedEditorId || selectedEditorId);
@@ -2249,11 +2718,48 @@ app.post('/api/settings', async (req, res) => {
       selectedImageAnalysisProvider = body.selectedImageAnalysisProvider;
     }
 
+    if (body.selectedImageAnalysisModel) {
+      const models = getImageAnalysisModels(selectedImageAnalysisProvider);
+      if (!models.includes(body.selectedImageAnalysisModel)) {
+        return res.status(400).json({
+          error: 'Invalid selectedImageAnalysisModel',
+          models,
+        });
+      }
+      selectedImageAnalysisModel = body.selectedImageAnalysisModel;
+    }
+
+    if (body.selectedImageGenerationProvider) {
+      if (!imageGenerationProviderOptions.includes(body.selectedImageGenerationProvider)) {
+        return res.status(400).json({
+          error: 'Invalid selectedImageGenerationProvider',
+          providers: imageGenerationProviderOptions,
+        });
+      }
+      selectedImageGenerationProvider = body.selectedImageGenerationProvider;
+    }
+
+    if (body.selectedImageGenerationModel) {
+      const models = getImageGenerationModels(selectedImageGenerationProvider);
+      if (!models.includes(body.selectedImageGenerationModel)) {
+        return res.status(400).json({
+          error: 'Invalid selectedImageGenerationModel',
+          models,
+        });
+      }
+      selectedImageGenerationModel = body.selectedImageGenerationModel;
+    }
+
+    normalizeImageProviderSelections();
+
     runtimeSettings.selectedEditorId = selectedEditorId;
     runtimeSettings.selectedTextProvider = selectedTextProvider;
     runtimeSettings.selectedTextModel = selectedTextModel;
     runtimeSettings.selectedProviderModels = selectedProviderModels;
     runtimeSettings.selectedImageAnalysisProvider = selectedImageAnalysisProvider;
+    runtimeSettings.selectedImageAnalysisModel = selectedImageAnalysisModel;
+    runtimeSettings.selectedImageGenerationProvider = selectedImageGenerationProvider;
+    runtimeSettings.selectedImageGenerationModel = selectedImageGenerationModel;
     runtimeSettings.profileName = profileName;
     saveRuntimeSettings(runtimeSettings);
 
@@ -2264,6 +2770,9 @@ app.post('/api/settings', async (req, res) => {
       providers: providerStatus(),
       selectedTextModel: selectedTextModel,
       selectedImageAnalysisProvider,
+      selectedImageAnalysisModel,
+      selectedImageGenerationProvider,
+      selectedImageGenerationModel,
       profileName: getProfileName(),
       ollamaBaseUrl,
     });
@@ -2795,7 +3304,7 @@ app.post('/api/videos/:videoId/thumbnails', upload.single('file'), async (req, r
 app.post('/api/videos/:videoId/thumbnails/:versionId/analyze', async (req, res) => {
   const videoId = Number(req.params.videoId);
   const versionId = Number(req.params.versionId);
-  const { provider = selectedImageAnalysisProvider, instruction = '' } = req.body || {};
+  const { provider = selectedImageAnalysisProvider, model = selectedImageAnalysisModel, instruction = '' } = req.body || {};
 
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
   if (!video) return res.status(404).json({ error: 'Video not found' });
@@ -2808,6 +3317,7 @@ app.post('/api/videos/:videoId/thumbnails/:versionId/analyze', async (req, res) 
       video,
       version,
       providerOverride: provider,
+      modelOverride: model,
       extraInstruction: instruction,
     });
 
@@ -2830,7 +3340,13 @@ app.post('/api/videos/:videoId/thumbnails/:versionId/analyze', async (req, res) 
 app.post('/api/videos/:videoId/thumbnails/:versionId/improve', async (req, res) => {
   const videoId = Number(req.params.videoId);
   const versionId = Number(req.params.versionId);
-  const { instruction = '', analysisProvider = selectedImageAnalysisProvider } = req.body || {};
+  const {
+    instruction = '',
+    analysisProvider = selectedImageAnalysisProvider,
+    analysisModel = selectedImageAnalysisModel,
+    generationProvider = selectedImageGenerationProvider,
+    generationModel = selectedImageGenerationModel,
+  } = req.body || {};
 
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
   if (!video) return res.status(404).json({ error: 'Video not found' });
@@ -2839,10 +3355,30 @@ app.post('/api/videos/:videoId/thumbnails/:versionId/improve', async (req, res) 
   if (!baseVersion) return res.status(404).json({ error: 'Thumbnail version not found' });
 
   try {
+    const analysisProviderId = String(analysisProvider || '').trim();
+    const analysisModelId = String(analysisModel || '').trim();
+    const generationProviderId = String(generationProvider || '').trim();
+    const generationModelId = String(generationModel || '').trim();
+
+    if (!imageAnalysisProviderOptions.includes(analysisProviderId)) {
+      return res.status(400).json({ error: `Invalid image analysis provider: ${analysisProviderId}` });
+    }
+    if (!imageGenerationProviderOptions.includes(generationProviderId)) {
+      return res.status(400).json({ error: `Invalid image generation provider: ${generationProviderId}` });
+    }
+
+    if (!isImageProviderConfigured(analysisProviderId, 'analysis')) {
+      return res.status(400).json({ error: `Image analysis provider not configured: ${analysisProviderId}` });
+    }
+    if (!isImageProviderConfigured(generationProviderId, 'generation')) {
+      return res.status(400).json({ error: `Image generation provider not configured: ${generationProviderId}` });
+    }
+
     const analyzed = await analyzeThumbnailVersion({
       video,
       version: baseVersion,
-      providerOverride: analysisProvider,
+      providerOverride: analysisProviderId,
+      modelOverride: analysisModelId,
       extraInstruction: instruction,
     });
 
@@ -2854,7 +3390,7 @@ app.post('/api/videos/:videoId/thumbnails/:versionId/improve', async (req, res) 
 Return STRICT JSON with keys:
 - summary (string)
 - improvements (array of strings)
-- generation_prompt (string, detailed nanobanana-ready prompt for a 1280x720 thumbnail)
+- generation_prompt (string, detailed image-generation-ready prompt for a 1280x720 thumbnail)
 - overlay_text_options (array of max-5-word strings)
 - title_synergy_hooks (array of strings)
 
@@ -2873,7 +3409,7 @@ Image analysis provider: ${analyzed.provider}
 Image analysis:
 ${analyzed.analysis}
 
-Extra instruction from ${userName}:
+Optional optimization note from ${userName}:
 ${instruction || '(none)'}
 
 Create a stronger subversion while preserving truthful packaging and mobile legibility.`;
@@ -2889,13 +3425,14 @@ Create a stronger subversion while preserving truthful packaging and mobile legi
     const generationPrompt = String(planJson.generation_prompt || '').trim() ||
       `Create a high-CTR truthful YouTube thumbnail for "${video.title}" using the following analysis: ${analyzed.analysis}`;
 
-    const imageBuffer = await generateImageWithNanobanana(generationPrompt);
+    const imageBuffer = await generateImageWithProvider(generationPrompt, generationProviderId, generationModelId);
     const subMeta = getNextThumbnailVersionMeta(videoId, baseVersion.id);
 
     const dir = path.join(uploadsDir, String(videoId));
     fs.mkdirSync(dir, { recursive: true });
 
-    const filename = `${Date.now()}-nanobanana-${Math.random().toString(36).slice(2, 8)}.png`;
+    const safeProvider = generationProviderId.replace(/[^a-z0-9_-]/gi, '');
+    const filename = `${Date.now()}-${safeProvider}-${Math.random().toString(36).slice(2, 8)}.png`;
     fs.writeFileSync(path.join(dir, filename), imageBuffer);
 
     const notes = String(planJson.summary || '').trim() || `AI subversion from ${getThumbnailVersionLabel(baseVersion)}`;
@@ -2907,13 +3444,13 @@ Create a stronger subversion while preserving truthful packaging and mobile legi
     ).run(
       videoId,
       filename,
-      `nanobanana-${getThumbnailVersionLabel(baseVersion)}.png`,
+      `${safeProvider}-${getThumbnailVersionLabel(baseVersion)}.png`,
       notes,
       subMeta.versionNumber,
       subMeta.majorVersion,
       subMeta.minorVersion,
       subMeta.parentVersionId,
-      'nanobanana',
+      safeProvider,
       analyzed.analysis,
       analyzed.provider,
       generationPrompt,
@@ -2927,7 +3464,7 @@ Create a stronger subversion while preserving truthful packaging and mobile legi
 
     try {
       db.prepare('INSERT INTO activity_log (video_id, actor, action_type, details) VALUES (?, ?, ?, ?)')
-        .run(videoId, 'Kona', 'thumbnail_ai_subversion', `Generated v${subMeta.majorVersion}.${subMeta.minorVersion} via nanobanana`);
+        .run(videoId, 'Kona', 'thumbnail_ai_subversion', `Generated v${subMeta.majorVersion}.${subMeta.minorVersion} via ${imageProviderLabel(generationProviderId)}`);
     } catch (e) {
       // ignore
     }
@@ -2947,6 +3484,166 @@ Create a stronger subversion while preserving truthful packaging and mobile legi
   } catch (err) {
     console.error('Thumbnail improve+generate failed:', err);
     res.status(500).json({ error: err.message || 'Thumbnail improvement generation failed' });
+  }
+});
+
+app.post('/api/videos/:videoId/thumbnails/generate-fresh', async (req, res) => {
+  const videoId = Number(req.params.videoId);
+  const {
+    instruction = '',
+    analysisProvider = selectedImageAnalysisProvider,
+    analysisModel = selectedImageAnalysisModel,
+    generationProvider = selectedImageGenerationProvider,
+    generationModel = selectedImageGenerationModel,
+  } = req.body || {};
+
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  try {
+    const analysisProviderId = String(analysisProvider || '').trim();
+    const analysisModelId = String(analysisModel || '').trim();
+    const generationProviderId = String(generationProvider || '').trim();
+    const generationModelId = String(generationModel || '').trim();
+
+    if (!imageAnalysisProviderOptions.includes(analysisProviderId)) {
+      return res.status(400).json({ error: `Invalid image analysis provider: ${analysisProviderId}` });
+    }
+    if (!imageGenerationProviderOptions.includes(generationProviderId)) {
+      return res.status(400).json({ error: `Invalid image generation provider: ${generationProviderId}` });
+    }
+
+    if (!isImageProviderConfigured(analysisProviderId, 'analysis')) {
+      return res.status(400).json({ error: `Image analysis provider not configured: ${analysisProviderId}` });
+    }
+    if (!isImageProviderConfigured(generationProviderId, 'generation')) {
+      return res.status(400).json({ error: `Image generation provider not configured: ${generationProviderId}` });
+    }
+
+    const researchContext = loadThumbnailResearchContext();
+    const findingsBlock = getLongTermFindingsPromptBlock();
+    const userName = getProfileName();
+
+    const planSystemPrompt = `You are ${userName}'s thumbnail ideation strategist.
+
+Return STRICT JSON with keys:
+- summary (string)
+- concept (string)
+- generation_prompt (string, detailed image-generation-ready prompt for a 1280x720 thumbnail)
+- overlay_text_options (array of max-5-word strings)
+- title_synergy_hooks (array of strings)
+
+No markdown. No prose outside JSON.
+
+Use this thumbnail research bible as hard context:
+${researchContext || '(No research document loaded.)'}
+
+Always apply these long-term creator findings:
+${findingsBlock || '(none)'}`;
+
+    const planUserPrompt = `Video title: ${video.title}
+Script summary:
+${String(video.script_content || '').slice(0, 4000) || '(empty)'}
+Description summary:
+${String(video.description || '').slice(0, 2000) || '(empty)'}
+Existing thumbnail notes:
+${String(video.thumbnail_ideas || '').slice(0, 1200) || '(none)'}
+Optional optimization note from ${userName}:
+${instruction || '(none)'}
+
+Generate a fresh thumbnail concept from scratch (not a variation of an existing image) while preserving truthful packaging and mobile legibility.`;
+
+    const planRaw = await runClaudeWithModelFallback({
+      systemPrompt: planSystemPrompt,
+      apiMessages: [{ role: 'user', content: planUserPrompt }],
+      onText: null,
+      maxModels: 4,
+    });
+
+    const planJson = extractJsonFromText(planRaw) || {};
+    const generationPrompt = String(planJson.generation_prompt || '').trim()
+      || `Create a high-CTR truthful YouTube thumbnail for "${video.title}" from scratch.`;
+
+    const imageBuffer = await generateImageWithProvider(generationPrompt, generationProviderId, generationModelId);
+    const next = getNextThumbnailVersionMeta(videoId, null);
+
+    const dir = path.join(uploadsDir, String(videoId));
+    fs.mkdirSync(dir, { recursive: true });
+
+    const safeProvider = generationProviderId.replace(/[^a-z0-9_-]/gi, '');
+    const filename = `${Date.now()}-${safeProvider}-fresh-${Math.random().toString(36).slice(2, 8)}.png`;
+    fs.writeFileSync(path.join(dir, filename), imageBuffer);
+
+    const notes = String(planJson.summary || planJson.concept || '').trim() || 'AI fresh thumbnail from scratch';
+
+    db.prepare(
+      `INSERT INTO thumbnail_versions
+      (video_id, filename, original_name, notes, version_number, major_version, minor_version, parent_version_id, source, generation_prompt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      videoId,
+      filename,
+      `${safeProvider}-fresh.png`,
+      notes,
+      next.versionNumber,
+      next.majorVersion,
+      next.minorVersion,
+      next.parentVersionId,
+      `${safeProvider}-fresh`,
+      generationPrompt,
+    );
+
+    db.prepare('UPDATE videos SET thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(`/uploads/${videoId}/${filename}`, videoId);
+
+    const created = db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? AND version_number = ?')
+      .get(videoId, next.versionNumber);
+
+    let analyzedProvider = analysisProviderId;
+    let analyzedText = '';
+
+    try {
+      const analyzed = await analyzeThumbnailVersion({
+        video,
+        version: created,
+        providerOverride: analysisProviderId,
+        modelOverride: analysisModelId,
+        extraInstruction: instruction,
+      });
+
+      analyzedProvider = analyzed.provider;
+      analyzedText = analyzed.analysis;
+
+      db.prepare('UPDATE thumbnail_versions SET analysis = ?, analysis_provider = ?, analysis_requested_at = CURRENT_TIMESTAMP, analysis_updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run(analyzed.analysis, analyzed.provider, created.id);
+    } catch (analysisErr) {
+      console.warn('Fresh thumbnail auto-analysis failed:', analysisErr.message);
+    }
+
+    try {
+      db.prepare('INSERT INTO activity_log (video_id, actor, action_type, details) VALUES (?, ?, ?, ?)')
+        .run(videoId, 'Kona', 'thumbnail_ai_fresh', `Generated fresh v${next.majorVersion}.${next.minorVersion} via ${imageProviderLabel(generationProviderId)}`);
+    } catch (e) {
+      // ignore
+    }
+
+    const updated = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ?').get(created.id);
+
+    res.json({
+      success: true,
+      createdVersion: normalizeThumbnailVersion(updated),
+      analysis: analyzedText,
+      analysisProvider: analyzedProvider,
+      plan: {
+        summary: planJson.summary || planJson.concept || '',
+        overlay_text_options: Array.isArray(planJson.overlay_text_options) ? planJson.overlay_text_options : [],
+        title_synergy_hooks: Array.isArray(planJson.title_synergy_hooks) ? planJson.title_synergy_hooks : [],
+        generation_prompt: generationPrompt,
+      },
+    });
+  } catch (err) {
+    console.error('Fresh thumbnail generation failed:', err);
+    res.status(500).json({ error: err.message || 'Fresh thumbnail generation failed' });
   }
 });
 

@@ -11,6 +11,9 @@ let selectedModel = '';
 let selectedTextProvider = 'anthropic';
 let availableTextProviders = [];
 let selectedImageAnalysisProvider = 'claude';
+let selectedImageAnalysisModel = '';
+let selectedImageGenerationProvider = 'nanobanana';
+let selectedImageGenerationModel = '';
 let selectedEditorId = 'davinci-resolve';
 let selectedEditorName = 'DaVinci Resolve';
 let selectedEditorShortName = 'DaVinci';
@@ -115,7 +118,9 @@ function providerLabel(providerId) {
     openrouter: 'OpenRouter',
     ollama: 'Ollama (Local)',
     claude: 'Claude Vision',
-    nanobanana: 'Nanobanana Vision',
+    nanobanana: 'Nanobanana Vision (OpenRouter)',
+    'grok-vision': 'Grok Vision (xAI)',
+    openrouter: 'OpenRouter Vision',
   };
   return labels[providerId] || providerId;
 }
@@ -241,8 +246,17 @@ function normalizeModelState(data = {}) {
     selectedModel: data.selectedModel || data.selectedTextModel || selectedModel,
     models: data.models || data.availableModels || [],
     textProviders: data.textProviders || data.providers || availableTextProviders,
+
     selectedImageAnalysisProvider: data.selectedImageAnalysisProvider || selectedImageAnalysisProvider,
+    selectedImageAnalysisModel: data.selectedImageAnalysisModel || selectedImageAnalysisModel,
     imageAnalysisProviders: data.imageAnalysisProviders || ['claude', 'nanobanana'],
+    imageAnalysisModels: data.imageAnalysisModels || [],
+
+    selectedImageGenerationProvider: data.selectedImageGenerationProvider || selectedImageGenerationProvider,
+    selectedImageGenerationModel: data.selectedImageGenerationModel || selectedImageGenerationModel,
+    imageGenerationProviders: data.imageGenerationProviders || ['nanobanana'],
+    imageGenerationModels: data.imageGenerationModels || [],
+
     selectedEditorId: data.selectedEditorId || selectedEditorId,
     selectedEditorName: data.selectedEditorName || selectedEditorName,
     selectedEditorShortName: data.selectedEditorShortName || selectedEditorShortName,
@@ -256,7 +270,12 @@ function applyModelState(rawState = {}) {
   const state = normalizeModelState(rawState);
   selectedTextProvider = state.selectedTextProvider || selectedTextProvider;
   selectedModel = state.selectedModel || selectedModel;
+
   selectedImageAnalysisProvider = state.selectedImageAnalysisProvider || selectedImageAnalysisProvider;
+  selectedImageAnalysisModel = state.selectedImageAnalysisModel || selectedImageAnalysisModel;
+  selectedImageGenerationProvider = state.selectedImageGenerationProvider || selectedImageGenerationProvider;
+  selectedImageGenerationModel = state.selectedImageGenerationModel || selectedImageGenerationModel;
+
   availableModels = Array.isArray(state.models) ? state.models : [];
   availableTextProviders = Array.isArray(state.textProviders) ? state.textProviders : [];
   selectedEditorId = state.selectedEditorId || selectedEditorId;
@@ -274,6 +293,9 @@ function applyModelState(rawState = {}) {
   const providerSelect = $('#settings-text-provider-select');
   const modelSelect = $('#settings-text-model-select');
   const imageAnalysisSelect = $('#settings-image-analysis-select');
+  const imageAnalysisModelSelect = $('#settings-image-analysis-model-select');
+  const imageGenerationSelect = $('#settings-image-generation-select');
+  const imageGenerationModelSelect = $('#settings-image-generation-model-select');
 
   if (editorSelect) {
     fillSelectOptions(editorSelect, availableEditors, selectedEditorId, (entry) => {
@@ -297,6 +319,18 @@ function applyModelState(rawState = {}) {
 
   if (imageAnalysisSelect) {
     fillSelectOptions(imageAnalysisSelect, state.imageAnalysisProviders, selectedImageAnalysisProvider, (entry) => providerLabel(typeof entry === 'string' ? entry : entry?.id));
+  }
+
+  if (imageAnalysisModelSelect) {
+    fillSelectOptions(imageAnalysisModelSelect, state.imageAnalysisModels || [], selectedImageAnalysisModel, (entry) => String(entry));
+  }
+
+  if (imageGenerationSelect) {
+    fillSelectOptions(imageGenerationSelect, state.imageGenerationProviders || [], selectedImageGenerationProvider, (entry) => providerLabel(typeof entry === 'string' ? entry : entry?.id));
+  }
+
+  if (imageGenerationModelSelect) {
+    fillSelectOptions(imageGenerationModelSelect, state.imageGenerationModels || [], selectedImageGenerationModel, (entry) => String(entry));
   }
 
   applyEditorBranding();
@@ -387,6 +421,9 @@ async function saveSettings() {
     selectedTextProvider,
     selectedTextModel: selectedModel,
     selectedImageAnalysisProvider,
+    selectedImageAnalysisModel,
+    selectedImageGenerationProvider,
+    selectedImageGenerationModel,
     profileName: String($('#settings-user-name')?.value || '').trim() || currentUserName || 'Nora',
     keys: {},
   };
@@ -554,12 +591,81 @@ function bindSettingsEvents() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Image analysis switch failed');
 
-      selectedImageAnalysisProvider = data.selectedImageAnalysisProvider || provider;
+      applyModelState(data);
       updateSettingsStatus(`Image analysis provider set to ${providerLabel(selectedImageAnalysisProvider)}.`, 'success');
       showToast(`Image analysis: ${providerLabel(selectedImageAnalysisProvider)}`);
     } catch (err) {
       updateSettingsStatus(`Image analysis switch failed: ${err.message}`, 'error');
       showToast('Image analysis switch failed: ' + err.message);
+      loadSettingsPage();
+    }
+  });
+
+  $('#settings-image-analysis-model-select')?.addEventListener('change', async (e) => {
+    const model = String(e.target.value || '').trim();
+    if (!model) return;
+
+    try {
+      const res = await fetch('/api/models/image-analysis/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: selectedImageAnalysisProvider, model }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Image analysis model switch failed');
+
+      applyModelState(data);
+      updateSettingsStatus(`Image analysis model set to ${selectedImageAnalysisModel}.`, 'success');
+      showToast(`Image analysis model: ${selectedImageAnalysisModel}`);
+    } catch (err) {
+      updateSettingsStatus(`Image analysis model switch failed: ${err.message}`, 'error');
+      showToast('Image analysis model switch failed: ' + err.message);
+      loadSettingsPage();
+    }
+  });
+
+  $('#settings-image-generation-select')?.addEventListener('change', async (e) => {
+    const provider = String(e.target.value || '').trim();
+    if (!provider) return;
+
+    try {
+      const res = await fetch('/api/models/image-generation/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Image generation switch failed');
+
+      applyModelState(data);
+      updateSettingsStatus(`Image generation provider set to ${providerLabel(selectedImageGenerationProvider)}.`, 'success');
+      showToast(`Image generation: ${providerLabel(selectedImageGenerationProvider)}`);
+    } catch (err) {
+      updateSettingsStatus(`Image generation switch failed: ${err.message}`, 'error');
+      showToast('Image generation switch failed: ' + err.message);
+      loadSettingsPage();
+    }
+  });
+
+  $('#settings-image-generation-model-select')?.addEventListener('change', async (e) => {
+    const model = String(e.target.value || '').trim();
+    if (!model) return;
+
+    try {
+      const res = await fetch('/api/models/image-generation/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: selectedImageGenerationProvider, model }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Image generation model switch failed');
+
+      applyModelState(data);
+      updateSettingsStatus(`Image generation model set to ${selectedImageGenerationModel}.`, 'success');
+      showToast(`Image generation model: ${selectedImageGenerationModel}`);
+    } catch (err) {
+      updateSettingsStatus(`Image generation model switch failed: ${err.message}`, 'error');
+      showToast('Image generation model switch failed: ' + err.message);
       loadSettingsPage();
     }
   });
@@ -730,6 +836,15 @@ function toggleOutline() {
 function showView(view) {
   $$('.view').forEach(v => v.classList.remove('active'));
   $(`#${view}-view`).classList.add('active');
+
+  const inWorkspace = view === 'workspace';
+  const navTabs = $('#global-nav-tabs');
+  const wsControls = $('#nav-workspace-controls');
+  if (navTabs) navTabs.classList.toggle('hidden', inWorkspace);
+  if (wsControls) wsControls.classList.toggle('hidden', !inWorkspace);
+
+  document.body.classList.toggle('workspace-mode', inWorkspace);
+  syncLayoutHeight();
 }
 
 // === Library ===
@@ -1964,6 +2079,7 @@ async function uploadThumbnail(file, parentVersionId = null, source = 'upload') 
   formData.append('notes', notes);
   formData.append('source', source);
   formData.append('analysisProvider', selectedImageAnalysisProvider || 'claude');
+  formData.append('analysisModel', selectedImageAnalysisModel || '');
   if (parentVersionId) formData.append('parentVersionId', String(parentVersionId));
 
   const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails`, { method: 'POST', body: formData });
@@ -1985,7 +2101,11 @@ async function analyzeSelectedThumbnail() {
     const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails/${selectedThumbnailVersionId}/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: selectedImageAnalysisProvider || 'claude', instruction }),
+      body: JSON.stringify({
+        provider: selectedImageAnalysisProvider || 'claude',
+        model: selectedImageAnalysisModel || '',
+        instruction,
+      }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Analyze failed');
@@ -2012,7 +2132,13 @@ async function generateThumbnailSubversion() {
     const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails/${selectedThumbnailVersionId}/improve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instruction, analysisProvider: selectedImageAnalysisProvider || 'claude' }),
+      body: JSON.stringify({
+        instruction,
+        analysisProvider: selectedImageAnalysisProvider || 'claude',
+        analysisModel: selectedImageAnalysisModel || '',
+        generationProvider: selectedImageGenerationProvider || 'nanobanana',
+        generationModel: selectedImageGenerationModel || '',
+      }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'AI subversion generation failed');
@@ -2031,6 +2157,44 @@ async function generateThumbnailSubversion() {
     showToast('Generation failed: ' + err.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '✨ Generate AI Subversion'; }
+  }
+}
+
+async function generateFreshThumbnail() {
+  if (!currentVideo) return;
+  const instruction = ($('#thumb-improve-instruction')?.value || '').trim();
+  const btn = document.getElementById('thumb-generate-fresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+
+  try {
+    const res = await fetch(`/api/videos/${currentVideo.id}/thumbnails/generate-fresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instruction,
+        analysisProvider: selectedImageAnalysisProvider || 'claude',
+        analysisModel: selectedImageAnalysisModel || '',
+        generationProvider: selectedImageGenerationProvider || 'nanobanana',
+        generationModel: selectedImageGenerationModel || '',
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Fresh thumbnail generation failed');
+
+    selectedThumbnailVersionId = data.createdVersion.id;
+    await loadThumbnails();
+
+    const plan = data.plan || {};
+    const out = document.getElementById('thumb-analysis-output');
+    if (out) {
+      out.innerHTML = `<strong>Generated fresh thumbnail v${data.createdVersion.version_label}</strong><br>${escapeHtml(plan.summary || 'Done')}<br><br><strong>Prompt used:</strong><br>${escapeHtml(plan.generation_prompt || '')}`;
+    }
+
+    showToast(`Generated fresh v${data.createdVersion.version_label}`);
+  } catch (err) {
+    showToast('Fresh generation failed: ' + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🆕 Generate Fresh Thumbnail (from scratch)'; }
   }
 }
 
@@ -2115,6 +2279,7 @@ document.addEventListener('DOMContentLoaded', () => {
   bind('#compact-chat-btn', 'click', compactCurrentChat);
   bind('#thumb-analyze-btn', 'click', analyzeSelectedThumbnail);
   bind('#thumb-generate-btn', 'click', generateThumbnailSubversion);
+  bind('#thumb-generate-fresh-btn', 'click', generateFreshThumbnail);
   const chatInput = bind('#chat-input', 'keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
