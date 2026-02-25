@@ -1177,6 +1177,18 @@ function processMessageContent(content, isAssistant) {
     return renderSuggestionDiffCard(idx, pendingSuggestions[idx]);
   });
 
+  // Backward-compat: if SUGGEST blocks arrive HTML-escaped, still render git-style diff cards
+  html = html.replace(/&lt;&lt;&lt;SUGGEST\s+tab=&quot;([^&]+)&quot;(?:\s+section=&quot;([^&]*)&quot;)?\s*&gt;&gt;&gt;\s*(?:<br>\s*|\n\s*)---OLD---\s*(?:<br>\s*|\n\s*)([\s\S]*?)\s*(?:<br>\s*|\n\s*)---NEW---\s*(?:<br>\s*|\n\s*)([\s\S]*?)\s*&lt;&lt;&lt;END_SUGGEST&gt;&gt;&gt;/gi, (match, tab, section, oldTextEscaped, newTextEscaped) => {
+    const idx = pendingSuggestions.length;
+    pendingSuggestions.push({
+      tab: String(unescapeHtml(tab || 'script')).trim(),
+      section: String(unescapeHtml(section || '')).trim(),
+      oldText: String(unescapeHtml(oldTextEscaped || '')).trim(),
+      newText: String(unescapeHtml(newTextEscaped || '')).trim(),
+    });
+    return renderSuggestionDiffCard(idx, pendingSuggestions[idx]);
+  });
+
   return html;
 }
 

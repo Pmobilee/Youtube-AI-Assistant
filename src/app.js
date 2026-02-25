@@ -3528,7 +3528,9 @@ The section parameter is optional but helps ${userName} understand context.
 - Keep formatting (line breaks, spacing) identical in OLD
 - The NEW text is your suggested replacement
 - Add context in the section parameter when referencing a specific part
-- Use this format sparingly — only for specific, concrete changes you're confident about
+- If you suggest any rewrite, punch-up, or replacement line, you MUST include at least one SUGGEST block
+- Do NOT only describe rewrite ideas in prose when you can provide a concrete replacement
+- Do NOT end rewrite feedback with "want me to draft lines" — draft them immediately as SUGGEST blocks
 
 ---
 
@@ -3577,7 +3579,7 @@ function buildChannelSystemPrompt(video, memory, globalMemory, channelType) {
   
   // Add channel-specific focus
   const channelFocus = {
-    'script': '\n\n## CURRENT FOCUS: Script Writing\nYou are in the Script chat. Focus on script content, structure, pacing, dialogue, and storytelling.\n\nWhen suggesting specific text changes to the script, use the <<<SUGGEST>>> format with tab="script" and optional section parameter.',
+    'script': '\n\n## CURRENT FOCUS: Script Writing\nYou are in the Script chat. Focus on script content, structure, pacing, dialogue, and storytelling.\n\nWhen suggesting specific text changes to the script, use the <<<SUGGEST>>> format with tab="script" and optional section parameter. If you quote a weak line or propose a punch-up, include a concrete SUGGEST block in the same response.',
     'description': '\n\n## CURRENT FOCUS: Video Description\nYou are in the Description chat. Focus on YouTube description, SEO, links, timestamps, and metadata.\n\nWhen suggesting specific text changes to the description, use the <<<SUGGEST>>> format with tab="description".',
     'thumbnail': '\n\n## CURRENT FOCUS: Thumbnails\nYou are in the Thumbnail chat. Focus on thumbnail concepts, composition, text overlays, color schemes, and visual impact. Discuss specific thumbnail iterations and improvements.\n\nWhen suggesting changes to thumbnail ideas text, use the <<<SUGGEST>>> format with tab="thumbnails".'
   };
