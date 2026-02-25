@@ -24,6 +24,7 @@ let availableEditors = [];
 let editorContextMeta = null;
 let thumbnailVersions = [];
 let selectedThumbnailVersionId = null;
+let pendingThumbnailGenerationMode = null;
 let isPaneSyncing = false;
 
 const tabToChannelMap = {
@@ -2122,9 +2123,60 @@ async function analyzeSelectedThumbnail() {
   }
 }
 
-async function generateThumbnailSubversion() {
+function openThumbnailGenerateModal(mode = 'subversion') {
+  if (!currentVideo) return;
+  if (mode === 'subversion' && !selectedThumbnailVersionId) {
+    showToast('Select a thumbnail version first');
+    return;
+  }
+
+  pendingThumbnailGenerationMode = mode;
+  const overlay = $('#thumb-generate-overlay');
+  const title = $('#thumb-generate-title');
+  const subtitle = $('#thumb-generate-subtitle');
+  const input = $('#thumb-generate-input');
+  const confirmBtn = $('#thumb-generate-confirm-btn');
+
+  const seed = ($('#thumb-improve-instruction')?.value || '').trim();
+  if (input) input.value = seed;
+
+  if (mode === 'fresh') {
+    if (title) title.textContent = 'Generate Fresh Thumbnail';
+    if (subtitle) subtitle.textContent = 'Add optional generation context for a brand-new thumbnail concept.';
+    if (confirmBtn) confirmBtn.textContent = 'Generate Fresh';
+  } else {
+    if (title) title.textContent = 'Generate AI Subversion';
+    if (subtitle) subtitle.textContent = 'Add optional generation context for improving the selected version.';
+    if (confirmBtn) confirmBtn.textContent = 'Generate Subversion';
+  }
+
+  overlay?.classList.remove('hidden');
+  setTimeout(() => input?.focus(), 20);
+}
+
+function closeThumbnailGenerateModal() {
+  $('#thumb-generate-overlay')?.classList.add('hidden');
+  pendingThumbnailGenerationMode = null;
+}
+
+async function confirmThumbnailGenerateModal() {
+  const mode = pendingThumbnailGenerationMode || 'subversion';
+  const instruction = String($('#thumb-generate-input')?.value || '').trim();
+  const persistField = $('#thumb-improve-instruction');
+  if (persistField) persistField.value = instruction;
+
+  closeThumbnailGenerateModal();
+
+  if (mode === 'fresh') {
+    await generateFreshThumbnail(instruction);
+  } else {
+    await generateThumbnailSubversion(instruction);
+  }
+}
+
+async function generateThumbnailSubversion(instructionOverride = '') {
   if (!currentVideo || !selectedThumbnailVersionId) return;
-  const instruction = ($('#thumb-improve-instruction')?.value || '').trim();
+  const instruction = String(instructionOverride || ($('#thumb-improve-instruction')?.value || '')).trim();
   const btn = document.getElementById('thumb-generate-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
 
@@ -2160,9 +2212,9 @@ async function generateThumbnailSubversion() {
   }
 }
 
-async function generateFreshThumbnail() {
+async function generateFreshThumbnail(instructionOverride = '') {
   if (!currentVideo) return;
-  const instruction = ($('#thumb-improve-instruction')?.value || '').trim();
+  const instruction = String(instructionOverride || ($('#thumb-improve-instruction')?.value || '')).trim();
   const btn = document.getElementById('thumb-generate-fresh-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
 
@@ -2233,6 +2285,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Escape') {
       if (!$('#snapshot-panel')?.classList.contains('hidden')) toggleSnapshotPanel(true);
       if (!$('#suggestion-overlay')?.classList.contains('hidden')) closeSuggestionOverlay();
+      if (!$('#thumb-generate-overlay')?.classList.contains('hidden')) closeThumbnailGenerateModal();
     }
   });
   // NOTE: initEditors() is called in openVideo() after the workspace view is shown
@@ -2278,8 +2331,8 @@ document.addEventListener('DOMContentLoaded', () => {
   bind('#send-btn', 'click', sendMessage);
   bind('#compact-chat-btn', 'click', compactCurrentChat);
   bind('#thumb-analyze-btn', 'click', analyzeSelectedThumbnail);
-  bind('#thumb-generate-btn', 'click', generateThumbnailSubversion);
-  bind('#thumb-generate-fresh-btn', 'click', generateFreshThumbnail);
+  bind('#thumb-generate-btn', 'click', () => openThumbnailGenerateModal('subversion'));
+  bind('#thumb-generate-fresh-btn', 'click', () => openThumbnailGenerateModal('fresh'));
   const chatInput = bind('#chat-input', 'keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();

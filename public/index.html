@@ -473,6 +473,19 @@
     </div>
   </div>
 
+  <!-- Thumbnail Generation Context Modal -->
+  <div id="thumb-generate-overlay" class="modal-overlay hidden" onclick="if(event.target.id==='thumb-generate-overlay') closeThumbnailGenerateModal()">
+    <div class="modal">
+      <h2 id="thumb-generate-title">Generate Thumbnail</h2>
+      <p id="thumb-generate-subtitle">Add optional context for this generation run.</p>
+      <textarea id="thumb-generate-input" class="modal-textarea" placeholder="Optional notes, angle, emotion, constraints, title hook..."></textarea>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeThumbnailGenerateModal()">Cancel</button>
+        <button class="btn btn-primary" id="thumb-generate-confirm-btn" onclick="confirmThumbnailGenerateModal()">Generate</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Image Preview Modal -->
   <div id="image-preview-overlay" class="modal-overlay hidden" onclick="closeImagePreview()">
     <img id="image-preview-img" src="" alt="Preview">

@@ -2057,6 +2057,9 @@ async function generateImageWithOpenRouter(prompt, model) {
 
   if (!res.ok) {
     const body = await res.text();
+    if (res.status === 404) {
+      throw new Error('OpenRouter /images/generations returned 404 (unsupported endpoint/model). Switch Image Generation Provider to Gemini/Grok or choose a supported OpenRouter image-generation model.');
+    }
     throw new Error(`OpenRouter image generation failed (${res.status}): ${body.slice(0, 400)}`);
   }
 

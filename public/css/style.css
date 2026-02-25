@@ -511,6 +511,21 @@ body {
   background: var(--bg); color: var(--text); margin-bottom: 16px;
 }
 .modal-input:focus { outline: none; border-color: var(--accent); }
+.modal-textarea {
+  width: 100%;
+  min-height: 120px;
+  max-height: 260px;
+  resize: vertical;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font);
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+  margin-bottom: 16px;
+}
+.modal-textarea:focus { outline: none; border-color: var(--accent); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* === Scrollbar === */
