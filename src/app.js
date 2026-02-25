@@ -3531,6 +3531,7 @@ The section parameter is optional but helps ${userName} understand context.
 - If you suggest any rewrite, punch-up, or replacement line, you MUST include at least one SUGGEST block
 - Do NOT only describe rewrite ideas in prose when you can provide a concrete replacement
 - Do NOT end rewrite feedback with "want me to draft lines" — draft them immediately as SUGGEST blocks
+- Always close with <<<END_SUGGEST>>> (never ---END---)
 
 ---
 

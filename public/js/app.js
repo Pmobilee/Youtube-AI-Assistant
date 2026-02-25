@@ -1126,7 +1126,7 @@ function renderSuggestionDiffCard(idx, suggestion) {
 
 function processMessageContent(content, isAssistant) {
   if (isAssistant) {
-    const suggestionRegex = /<<<SUGGEST\s+tab="([^"]+)"(?:\s+section="([^"]*)")?\s*>>>\s*[\r\n]+---OLD---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---NEW---\s*[\r\n]+([\s\S]*?)\s*<<<END_SUGGEST>>>/gi;
+    const suggestionRegex = /<<<SUGGEST\s+tab="([^"]+)"(?:\s+section="([^"]*)")?\s*>>>\s*[\r\n]+---OLD---\s*[\r\n]+([\s\S]*?)\s*[\r\n]+---NEW---\s*[\r\n]+([\s\S]*?)\s*(?:<<<END_SUGGEST>>>|---END---|<<<END>>>)/gi;
 
     content = content.replace(suggestionRegex, (match, tab, section, oldText, newText) => {
       const idx = pendingSuggestions.length;
@@ -1178,7 +1178,7 @@ function processMessageContent(content, isAssistant) {
   });
 
   // Backward-compat: if SUGGEST blocks arrive HTML-escaped, still render git-style diff cards
-  html = html.replace(/&lt;&lt;&lt;SUGGEST\s+tab=&quot;([^&]+)&quot;(?:\s+section=&quot;([^&]*)&quot;)?\s*&gt;&gt;&gt;\s*(?:<br>\s*|\n\s*)---OLD---\s*(?:<br>\s*|\n\s*)([\s\S]*?)\s*(?:<br>\s*|\n\s*)---NEW---\s*(?:<br>\s*|\n\s*)([\s\S]*?)\s*&lt;&lt;&lt;END_SUGGEST&gt;&gt;&gt;/gi, (match, tab, section, oldTextEscaped, newTextEscaped) => {
+  html = html.replace(/&lt;&lt;&lt;SUGGEST\s+tab=&quot;([^&]+)&quot;(?:\s+section=&quot;([^&]*)&quot;)?\s*&gt;&gt;&gt;\s*(?:<br>\s*|\n\s*)---OLD---\s*(?:<br>\s*|\n\s*)([\s\S]*?)\s*(?:<br>\s*|\n\s*)---NEW---\s*(?:<br>\s*|\n\s*)([\s\S]*?)\s*(?:&lt;&lt;&lt;END_SUGGEST&gt;&gt;&gt;|---END---|&lt;&lt;&lt;END&gt;&gt;&gt;)/gi, (match, tab, section, oldTextEscaped, newTextEscaped) => {
     const idx = pendingSuggestions.length;
     pendingSuggestions.push({
       tab: String(unescapeHtml(tab || 'script')).trim(),
