@@ -1098,30 +1098,10 @@ function renderMessage(role, content, imageUrl = null) {
 
 function renderSuggestionDiffCard(idx, suggestion) {
   if (!suggestion) return '';
-  const id = `suggest-${Date.now()}-${idx}`;
   const tab = String(suggestion.tab || 'script');
   const section = String(suggestion.section || '').trim();
-  const oldText = String(suggestion.oldText || '').trim();
-  const newText = String(suggestion.newText || '').trim();
-
-  const oldTextJson = JSON.stringify(oldText).replace(/'/g, "\\'");
-  const newTextJson = JSON.stringify(newText).replace(/'/g, "\\'");
-
-  return `
-    <div class="suggestion-diff" id="${id}">
-      <div class="diff-header">
-        <span class="diff-tab">📝 ${escapeHtml(tab)}${section ? ` › ${escapeHtml(section)}` : ''}</span>
-        <div class="diff-actions">
-          <button class="diff-accept" onclick="acceptSuggestion('${id}', '${escapeHtml(tab)}', ${oldTextJson}, ${newTextJson})">✓ Accept</button>
-          <button class="diff-reject" onclick="rejectSuggestion('${id}')">✕ Reject</button>
-        </div>
-      </div>
-      <div class="diff-body">
-        <div class="diff-old"><span class="diff-label">- Remove</span><pre>${escapeHtml(oldText)}</pre></div>
-        <div class="diff-new"><span class="diff-label">+ Add</span><pre>${escapeHtml(newText)}</pre></div>
-      </div>
-    </div>
-  `;
+  const label = section || tab;
+  return `<span class="suggestion-chip" onclick="showSuggestion(${idx})" id="suggestion-chip-${idx}">💡 <u>Suggestion: ${escapeHtml(label)}</u></span>`;
 }
 
 function processMessageContent(content, isAssistant) {
@@ -1235,6 +1215,11 @@ function showSuggestion(idx) {
   const s = pendingSuggestions[idx];
   if (!s) return;
   activeSuggestionIdx = idx;
+
+  // Ensure the script editor pane is visible so the git-diff overlay appears inside editor, not chat.
+  if (typeof switchTab === 'function') {
+    switchTab('script');
+  }
   
   const overlay = $('#suggestion-overlay');
   $('#suggestion-section').textContent = s.section ? `› ${s.section}` : `› ${s.tab}`;
