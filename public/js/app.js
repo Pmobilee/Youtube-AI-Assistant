@@ -119,11 +119,25 @@ function providerLabel(providerId) {
     openrouter: 'OpenRouter',
     ollama: 'Ollama (Local)',
     claude: 'Claude Vision',
-    nanobanana: 'Nanobanana Vision (OpenRouter)',
+    nanobanana: 'Nanobanana (OpenRouter Images API)',
     'grok-vision': 'Grok Vision (xAI)',
-    openrouter: 'OpenRouter Vision',
   };
   return labels[providerId] || providerId;
+}
+
+function providerKeyName(providerId) {
+  const map = {
+    anthropic: 'ANTHROPIC_API_KEY',
+    openai: 'OPENAI_API_KEY',
+    xai: 'XAI_API_KEY',
+    gemini: 'GEMINI_API_KEY',
+    openrouter: 'OPENROUTER_API_KEY',
+    ollama: 'OLLAMA_API_KEY (optional)',
+    claude: 'ANTHROPIC_API_KEY',
+    nanobanana: 'OPENROUTER_API_KEY',
+    'grok-vision': 'XAI_API_KEY',
+  };
+  return map[providerId] || 'API key';
 }
 
 function sortAlpha(values = []) {
@@ -319,7 +333,7 @@ function applyModelState(rawState = {}) {
       const id = typeof entry === 'string' ? entry : entry?.id;
       const configured = typeof entry === 'string' ? false : Boolean(entry?.configured);
       const suffix = configured ? ' ✓' : '';
-      return `${providerLabel(id)}${suffix}`;
+      return `${providerLabel(id)} · ${providerKeyName(id)}${suffix}`;
     });
   }
 
@@ -328,7 +342,10 @@ function applyModelState(rawState = {}) {
   }
 
   if (imageAnalysisSelect) {
-    fillSelectOptions(imageAnalysisSelect, state.imageAnalysisProviders, selectedImageAnalysisProvider, (entry) => providerLabel(typeof entry === 'string' ? entry : entry?.id));
+    fillSelectOptions(imageAnalysisSelect, state.imageAnalysisProviders, selectedImageAnalysisProvider, (entry) => {
+      const id = typeof entry === 'string' ? entry : entry?.id;
+      return `${providerLabel(id)} · ${providerKeyName(id)}`;
+    });
   }
 
   if (imageAnalysisModelSelect) {
@@ -336,7 +353,10 @@ function applyModelState(rawState = {}) {
   }
 
   if (imageGenerationSelect) {
-    fillSelectOptions(imageGenerationSelect, state.imageGenerationProviders || [], selectedImageGenerationProvider, (entry) => providerLabel(typeof entry === 'string' ? entry : entry?.id));
+    fillSelectOptions(imageGenerationSelect, state.imageGenerationProviders || [], selectedImageGenerationProvider, (entry) => {
+      const id = typeof entry === 'string' ? entry : entry?.id;
+      return `${providerLabel(id)} · ${providerKeyName(id)}`;
+    });
   }
 
   if (imageGenerationModelSelect) {
@@ -345,6 +365,7 @@ function applyModelState(rawState = {}) {
 
   applyEditorBranding();
   updateEditorContextStatus(editorContextMeta);
+  updateSettingsRoutingHint();
 }
 
 function renderProviderKeyHints(providers = []) {
@@ -369,6 +390,25 @@ function renderProviderKeyHints(providers = []) {
       ? `Configured (${row.keyHint || '••••'})`
       : 'Not set';
   });
+}
+
+function updateSettingsRoutingHint() {
+  const hint = $('#settings-routing-hint');
+  if (!hint) return;
+
+  const textProvider = selectedTextProvider || '(none)';
+  const textModel = selectedModel || '(none)';
+  const analysisProvider = selectedImageAnalysisProvider || '(none)';
+  const analysisModel = selectedImageAnalysisModel || '(none)';
+  const generationProvider = selectedImageGenerationProvider || '(none)';
+  const generationModel = selectedImageGenerationModel || '(none)';
+
+  hint.innerHTML = `
+    <strong>Active API routing:</strong><br>
+    Text chat → <code>${escapeHtml(providerLabel(textProvider))}</code> / <code>${escapeHtml(textModel)}</code> via <code>${escapeHtml(providerKeyName(textProvider))}</code><br>
+    Thumbnail analysis → <code>${escapeHtml(providerLabel(analysisProvider))}</code> / <code>${escapeHtml(analysisModel)}</code> via <code>${escapeHtml(providerKeyName(analysisProvider))}</code><br>
+    Thumbnail generation → <code>${escapeHtml(providerLabel(generationProvider))}</code> / <code>${escapeHtml(generationModel)}</code> via <code>${escapeHtml(providerKeyName(generationProvider))}</code>
+  `;
 }
 
 function updateSettingsStatus(message, tone = '') {

@@ -840,7 +840,7 @@ const openRouterImageModelCandidates = parseCsv(
 
 const openRouterGenerationFallbackCandidates = parseCsv(
   process.env.NORA_WRITER_OPENROUTER_IMAGE_GENERATION_MODELS,
-  ['google/gemini-3-pro-image-preview', 'google/gemini-2.5-flash-image', 'openai/gpt-5-image-mini', 'openai/gpt-5-image', 'openrouter/auto']
+  ['openai/gpt-5-image-mini', 'openai/gpt-5-image', 'openrouter/auto']
 );
 
 const geminiImageModelCandidates = parseCsv(
@@ -1048,10 +1048,16 @@ function isOpenRouterAnalysisModelRow(row) {
 }
 
 function isOpenRouterGenerationModelRow(row) {
-  const { output, all, hay } = extractRowModalities(row);
-  if (output.has('image')) return true;
-  if (!all.has('image')) return false;
-  return /(image|flux|sdxl|dall|ideogram|recraft|imagen|seedream|gpt-image)/.test(hay);
+  const { output, id, hay } = extractRowModalities(row);
+  if (!output.has('image')) return false;
+
+  // OpenRouter /images/generations compatibility is not universal.
+  // Keep this list strict to models known/expected to work with that endpoint.
+  if (id === 'openrouter/auto') return true;
+  if (id.startsWith('openai/gpt-5-image')) return true;
+
+  // Additional image-generation families that typically support image endpoints.
+  return /(gpt-image|dall|flux|sdxl|ideogram|recraft|seedream|imagen)/.test(hay);
 }
 
 function alphaSortStrings(items) {
@@ -1956,9 +1962,16 @@ async function runClaudeWithModelFallback({ systemPrompt, apiMessages, onText, m
   });
 }
 
-async function runTextPlanningWithProviderFallback({ systemPrompt, apiMessages, onText = null, maxModels = 4 }) {
-  const configured = providerStatus().filter(p => p.configured).map(p => p.id);
-  const ordered = uniqStrings([
+async function runTextPlanningWithProviderFallback({ systemPrompt, apiMessages, onText = null, maxModels = 4, preferredProvider = null, allowFallback = true }) {
+  const preferred = String(preferredProvider || '').trim();
+  const includeOllamaFallback = selectedTextProvider === 'ollama' || preferred === 'ollama';
+  const configured = providerStatus()
+    .filter(p => p.configured)
+    .map(p => p.id)
+    .filter(id => id !== 'ollama' || includeOllamaFallback);
+
+  let ordered = uniqStrings([
+    preferred,
     selectedTextProvider,
     ...configured,
     'openrouter',
@@ -1966,10 +1979,19 @@ async function runTextPlanningWithProviderFallback({ systemPrompt, apiMessages, 
     'gemini',
     'anthropic',
     'xai',
-    'ollama',
+    ...(includeOllamaFallback ? ['ollama'] : []),
   ]).filter(id => textProviderIds.includes(id));
 
+  if (!allowFallback) {
+    ordered = ordered.length ? [ordered[0]] : [];
+    if (!ordered.length || !providerIsConfigured(ordered[0])) {
+      throw new Error(`Selected text provider is not configured. Update Settings → Text provider key.`);
+    }
+  }
+
   let lastErr = null;
+  let priorityErr = null;
+
   for (const provider of ordered) {
     if (!providerIsConfigured(provider)) continue;
     try {
@@ -1983,11 +2005,15 @@ async function runTextPlanningWithProviderFallback({ systemPrompt, apiMessages, 
       });
     } catch (err) {
       lastErr = err;
+      const msg = String(err?.message || '');
+      if (/authentication_error|invalid x-api-key|401|403|key limit exceeded/i.test(msg)) {
+        priorityErr = priorityErr || err;
+      }
       console.warn(`Planning provider ${provider} failed, trying next:`, err.message);
     }
   }
 
-  throw lastErr || new Error('No working text provider available for thumbnail planning.');
+  throw priorityErr || lastErr || new Error('No working text provider available for thumbnail planning.');
 }
 
 async function runImageAnalysisResponse({ systemPrompt, apiMessages, onText, providerOverride = null, modelOverride = null }) {
@@ -3512,6 +3538,8 @@ Create a stronger subversion while preserving truthful packaging and mobile legi
       apiMessages: [{ role: 'user', content: planUserPrompt }],
       onText: null,
       maxModels: 4,
+      preferredProvider: selectedTextProvider,
+      allowFallback: false,
     });
 
     const planJson = extractJsonFromText(planRaw) || {};
@@ -3651,6 +3679,8 @@ Generate a fresh thumbnail concept from scratch (not a variation of an existing 
       apiMessages: [{ role: 'user', content: planUserPrompt }],
       onText: null,
       maxModels: 4,
+      preferredProvider: selectedTextProvider,
+      allowFallback: false,
     });
 
     const planJson = extractJsonFromText(planRaw) || {};
