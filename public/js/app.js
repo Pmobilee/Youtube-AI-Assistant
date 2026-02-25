@@ -1517,7 +1517,8 @@ async function handleChatImage(file) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         message: `I'm sharing this image with you: ${imageUrl}\nPlease look at it and give me your thoughts.`, 
-        imageUrl 
+        imageUrl,
+        selectedThumbnailVersionId: currentChatChannel === 'thumbnail' ? selectedThumbnailVersionId : null,
       })
     });
     
@@ -1586,7 +1587,10 @@ async function sendMessage() {
     const res = await fetch(`/api/videos/${currentVideo.id}/channels/${currentChatChannel}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message })
+      body: JSON.stringify({
+        message,
+        selectedThumbnailVersionId: currentChatChannel === 'thumbnail' ? selectedThumbnailVersionId : null,
+      })
     });
 
     const reader = res.body.getReader();

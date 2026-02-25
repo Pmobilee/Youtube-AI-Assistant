@@ -3090,7 +3090,7 @@ app.delete('/api/videos/:videoId/channels/:channelType/messages', (req, res) => 
 
 app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => {
   const { videoId, channelType } = req.params;
-  const { message, imageUrl } = req.body;
+  const { message, imageUrl, selectedThumbnailVersionId } = req.body;
   const validChannels = ['script', 'description', 'thumbnail'];
   
   if (!validChannels.includes(channelType)) {
@@ -3115,9 +3115,19 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
   // Get SHARED memory (all channels contribute to this)
   const memory = db.prepare('SELECT * FROM video_memory WHERE video_id = ?').get(videoId);
   const globalMemory = JSON.parse(fs.readFileSync(globalMemoryPath, 'utf-8'));
+
+  let selectedThumbnailVersion = null;
+  if (channelType === 'thumbnail' && selectedThumbnailVersionId !== undefined && selectedThumbnailVersionId !== null) {
+    const versionIdNum = Number(selectedThumbnailVersionId);
+    if (Number.isFinite(versionIdNum) && versionIdNum > 0) {
+      selectedThumbnailVersion = db.prepare('SELECT * FROM thumbnail_versions WHERE id = ? AND video_id = ?').get(versionIdNum, videoId) || null;
+    }
+  }
   
   // Build system prompt with channel context
-  const systemPrompt = buildChannelSystemPrompt(video, memory, globalMemory, channelType);
+  const systemPrompt = buildChannelSystemPrompt(video, memory, globalMemory, channelType, {
+    selectedThumbnailVersion,
+  });
   
   // Format messages for Anthropic (filter empty content, support images)
   const apiMessages = channelMessages
@@ -3142,13 +3152,15 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
       return msg;
     });
 
-  // Thumbnail channel: always attach latest uploaded thumbnail to the latest user turn
+  // Thumbnail channel: attach selected thumbnail version image (fallback: latest uploaded)
   if (channelType === 'thumbnail') {
-    const latestThumb = db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? ORDER BY version_number DESC LIMIT 1').get(videoId);
-    if (latestThumb) {
+    const activeThumb = selectedThumbnailVersion
+      || db.prepare('SELECT * FROM thumbnail_versions WHERE video_id = ? ORDER BY version_number DESC LIMIT 1').get(videoId);
+
+    if (activeThumb) {
       const imagePart = {
         type: 'image',
-        source: { type: 'url', url: buildLocalUploadUrl(videoId, latestThumb.filename) }
+        source: { type: 'url', url: buildLocalUploadUrl(videoId, activeThumb.filename) }
       };
 
       for (let i = apiMessages.length - 1; i >= 0; i--) {
@@ -4258,7 +4270,7 @@ ${video.thumbnail_ideas || '(empty)'}`;
   return prompt;
 }
 
-function buildChannelSystemPrompt(video, memory, globalMemory, channelType) {
+function buildChannelSystemPrompt(video, memory, globalMemory, channelType, options = {}) {
   // Start with base prompt
   let prompt = buildSystemPrompt(video, memory, globalMemory);
   
@@ -4276,7 +4288,26 @@ function buildChannelSystemPrompt(video, memory, globalMemory, channelType) {
     if (researchContext) {
       prompt += `\n\n## Thumbnail Research Bible (use as hard context)\n${researchContext}`;
     }
-    prompt += `\n\n## Thumbnail Channel Operational Rules\n- Always evaluate the currently attached thumbnail image before giving advice.\n- Prefer specific, testable edits over generic taste comments.\n- Keep advice aligned with truthful packaging (high CTR + high retention).\n- Reference version labels (for example 2.3, 2.4) when discussing iterations.`;
+
+    const selectedVersion = options?.selectedThumbnailVersion || null;
+    if (selectedVersion) {
+      const versionLabel = getThumbnailVersionLabel(selectedVersion);
+      const analysisText = String(selectedVersion.analysis || '').trim();
+      const analysisProvider = String(selectedVersion.analysis_provider || '').trim();
+      const analysisMeta = analysisText
+        ? `${analysisProvider ? `Provider: ${analysisProvider}` : 'Provider: (unknown)'}${selectedVersion.analysis_updated_at ? ` | Updated: ${selectedVersion.analysis_updated_at}` : ''}`
+        : '';
+
+      prompt += `\n\n## Currently Selected Thumbnail Version\n- Version: ${versionLabel}\n- Source: ${selectedVersion.source || 'upload'}\n- Notes: ${selectedVersion.notes || '(none)'}\n- Parent Version ID: ${selectedVersion.parent_version_id || '(none)'}`;
+
+      if (analysisText) {
+        prompt += `\n\n## Current Analysis For Selected Version\n${analysisMeta ? `${analysisMeta}\n` : ''}${analysisText.slice(0, 5000)}`;
+      } else {
+        prompt += `\n\n## Current Analysis For Selected Version\nNo saved analysis yet for this version.`;
+      }
+    }
+
+    prompt += `\n\n## Thumbnail Channel Operational Rules\n- Always evaluate the currently attached thumbnail image before giving advice.\n- If a selected version context is present, prioritize advice for that exact version/subversion first.\n- Prefer specific, testable edits over generic taste comments.\n- Keep advice aligned with truthful packaging (high CTR + high retention).\n- Reference version labels (for example 2.3, 2.4) when discussing iterations.`;
   }
   
   // Add cross-channel context summary
