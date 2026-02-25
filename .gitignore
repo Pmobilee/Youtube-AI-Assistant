@@ -1,15 +1,12 @@
 # Dependencies
 node_modules/
 
-# Runtime data / uploads
+# Runtime data / uploads (never commit personal/project data)
 uploads/
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/*.db.bak*
-data/runtime_settings.json
-data/global_memory.json
-data/editor_context_cache.json
+data/*
+!data/.gitkeep
+!data/*.example.json
+!data/*.example.md
 
 # Environment / secrets
 .env
