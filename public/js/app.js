@@ -411,11 +411,20 @@ function updateSettingsRoutingHint() {
   const generationProvider = selectedImageGenerationProvider || '(none)';
   const generationModel = selectedImageGenerationModel || '(none)';
 
+  const analysisLabel = analysisProvider === 'openrouter'
+    ? 'OpenRouter Vision (analysis)'
+    : providerLabel(analysisProvider);
+  const generationLabel = generationProvider === 'nanobanana'
+    ? 'Nanobanana (OpenRouter Images API · stable)'
+    : (generationProvider === 'openrouter'
+      ? 'OpenRouter Image (all output-image models · experimental)'
+      : providerLabel(generationProvider));
+
   hint.innerHTML = `
     <strong>Active API routing:</strong><br>
     Text chat → <code>${escapeHtml(providerLabel(textProvider))}</code> / <code>${escapeHtml(textModel)}</code> via <code>${escapeHtml(providerKeyName(textProvider))}</code><br>
-    Thumbnail analysis → <code>${escapeHtml(providerLabel(analysisProvider))}</code> / <code>${escapeHtml(analysisModel)}</code> via <code>${escapeHtml(providerKeyName(analysisProvider))}</code><br>
-    Thumbnail generation → <code>${escapeHtml(providerLabel(generationProvider))}</code> / <code>${escapeHtml(generationModel)}</code> via <code>${escapeHtml(providerKeyName(generationProvider))}</code>
+    Thumbnail analysis → <code>${escapeHtml(analysisLabel)}</code> / <code>${escapeHtml(analysisModel)}</code> via <code>${escapeHtml(providerKeyName(analysisProvider))}</code><br>
+    Thumbnail generation → <code>${escapeHtml(generationLabel)}</code> / <code>${escapeHtml(generationModel)}</code> via <code>${escapeHtml(providerKeyName(generationProvider))}</code>
   `;
 }
 

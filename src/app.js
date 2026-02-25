@@ -1871,6 +1871,13 @@ async function runProviderWithModelFallback({ provider, systemPrompt, apiMessage
         return text;
       }
     } catch (err) {
+      const message = String(err?.message || '');
+      if (normalizedProvider === 'anthropic' && /invalid x-api-key|authentication_error/i.test(message)) {
+        err = new Error('ANTHROPIC_API_KEY is invalid (Anthropic returned authentication_error: invalid x-api-key).');
+      }
+      if (normalizedProvider === 'openrouter' && /user not found|401/i.test(message)) {
+        err = new Error('OPENROUTER_API_KEY is invalid or revoked (OpenRouter returned 401 User not found).');
+      }
       lastErr = err;
       console.warn(`${normalizedProvider} model ${model} failed, trying next:`, err.message);
     }
@@ -2317,6 +2324,14 @@ async function generateImageWithProvider(prompt, provider, model) {
   }
 
   return generateImageWithOpenRouter(prompt, chosenModel);
+}
+
+function getPlanningProviderForImageGeneration(generationProviderId) {
+  const normalized = String(generationProviderId || '').trim();
+  if (normalized === 'gemini') return 'gemini';
+  if (normalized === 'grok-vision') return 'xai';
+  if (normalized === 'nanobanana' || normalized === 'openrouter') return 'openrouter';
+  return selectedTextProvider;
 }
 
 async function analyzeThumbnailVersion({ video, version, providerOverride = null, modelOverride = null, extraInstruction = '' }) {
@@ -3572,7 +3587,7 @@ Create a stronger subversion while preserving truthful packaging and mobile legi
       apiMessages: [{ role: 'user', content: planUserPrompt }],
       onText: null,
       maxModels: 4,
-      preferredProvider: selectedTextProvider,
+      preferredProvider: getPlanningProviderForImageGeneration(generationProviderId),
       allowFallback: false,
     });
 
@@ -3713,7 +3728,7 @@ Generate a fresh thumbnail concept from scratch (not a variation of an existing 
       apiMessages: [{ role: 'user', content: planUserPrompt }],
       onText: null,
       maxModels: 4,
-      preferredProvider: selectedTextProvider,
+      preferredProvider: getPlanningProviderForImageGeneration(generationProviderId),
       allowFallback: false,
     });
 
