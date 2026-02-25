@@ -7,7 +7,7 @@ const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk');
 const PDFDocument = require('pdfkit');
 const dotenv = require('dotenv');
-const { envFilePath, dataDir, uploadsDir, publicDir } = require('./config/paths');
+const { projectRoot, envFilePath, dataDir, uploadsDir, publicDir } = require('./config/paths');
 const { buildModelState: buildModelStateService } = require('./services/modelStateService');
 const { createFindingsRouter } = require('./routes/findingsRoutes');
 // Native fetch for Node 18+ (fallback for older versions)
@@ -425,6 +425,101 @@ const editorCatalog = [
 
 const editorById = Object.fromEntries(editorCatalog.map(editor => [editor.id, editor]));
 const defaultEditorId = editorCatalog[0].id;
+
+const repoEditorTipsPathById = {
+  'davinci-resolve': path.join(projectRoot, 'references', 'editor-tips', 'davinci-resolve.md'),
+  'premiere-pro': path.join(projectRoot, 'references', 'editor-tips', 'premiere-pro.md'),
+  'final-cut-pro': path.join(projectRoot, 'references', 'editor-tips', 'final-cut-pro.md'),
+  'after-effects': path.join(projectRoot, 'references', 'editor-tips', 'after-effects.md'),
+  'capcut': path.join(projectRoot, 'references', 'editor-tips', 'capcut.md'),
+};
+
+function parseTipsMarkdownSections(markdownText) {
+  const src = String(markdownText || '').replace(/\r\n/g, '\n');
+  const lines = src.split('\n');
+  const sections = [];
+
+  let currentTitle = null;
+  let currentBody = [];
+
+  const flush = () => {
+    if (!currentTitle) return;
+    const content = currentBody.join('\n').trim();
+    sections.push({
+      title: String(currentTitle).replace(/^#+\s*/, '').trim(),
+      content,
+    });
+    currentTitle = null;
+    currentBody = [];
+  };
+
+  for (const line of lines) {
+    const sectionMatch = line.match(/^##\s+(.+)$/);
+    if (sectionMatch) {
+      flush();
+      currentTitle = sectionMatch[1].trim();
+      continue;
+    }
+
+    if (currentTitle) {
+      currentBody.push(line);
+    }
+  }
+
+  flush();
+
+  if (!sections.length) {
+    return [{ title: 'Imported Tips', content: src.trim() }];
+  }
+
+  return sections
+    .map(section => ({
+      title: section.title,
+      content: String(section.content || '').trim() || '(No details provided.)',
+    }))
+    .filter(section => section.title);
+}
+
+function seedEditorTipsFromRepoMarkdown() {
+  const findExisting = db.prepare('SELECT id FROM davinci_tips WHERE editor_id = ? AND parent_id IS NULL AND title = ? LIMIT 1');
+  const findMaxPos = db.prepare('SELECT COALESCE(MAX(position), 0) as max FROM davinci_tips WHERE editor_id = ? AND parent_id IS NULL');
+  const insertSection = db.prepare(`
+    INSERT INTO davinci_tips (editor_id, parent_id, title, content, level, position)
+    VALUES (?, NULL, ?, ?, 1, ?)
+  `);
+
+  for (const editor of editorCatalog) {
+    const filePath = repoEditorTipsPathById[editor.id];
+    if (!filePath || !fs.existsSync(filePath)) continue;
+
+    let markdown = '';
+    try {
+      markdown = fs.readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      console.warn(`Could not read repo tips for ${editor.id}:`, err.message);
+      continue;
+    }
+
+    const sections = parseTipsMarkdownSections(markdown);
+    if (!sections.length) continue;
+
+    let nextPos = Number(findMaxPos.get(editor.id)?.max || 0) + 1;
+    let inserted = 0;
+
+    for (const section of sections) {
+      const exists = findExisting.get(editor.id, section.title);
+      if (exists) continue;
+      insertSection.run(editor.id, section.title, section.content, nextPos++);
+      inserted += 1;
+    }
+
+    if (inserted > 0) {
+      console.log(`✅ Imported ${inserted} repo tips sections for ${editor.name}`);
+    }
+  }
+}
+
+seedEditorTipsFromRepoMarkdown();
 
 const textProviderCatalog = [
   { id: 'anthropic', label: 'Claude (Anthropic)', envKey: 'ANTHROPIC_API_KEY', requiresKey: true },
