@@ -152,7 +152,7 @@ Open `.env` and add at least one API key, then:
 npm start
 ```
 
-Open **http://localhost:3000** — you're done.
+Open **http://127.0.0.1:3000** — you're done.
 
 For development with auto-reload: `npm run dev`
 
@@ -272,11 +272,11 @@ All configuration lives in `.env`. The essentials:
 | `XAI_API_KEY` | Grok (xAI) API key | — |
 | `GEMINI_API_KEY` | Google Gemini API key | — |
 | `OPENROUTER_API_KEY` | OpenRouter API key | — |
-| `OLLAMA_BASE_URL` | Ollama server address | `http://127.0.0.1:11434` |
-| `NORA_WRITER_TEXT_PROVIDER` | Default text provider | `anthropic` |
-| `NORA_WRITER_MODEL` | Default text model | `claude-sonnet-4-6` |
-| `NORA_WRITER_EDITOR` | Default editing app | `davinci-resolve` |
-| `NORA_WRITER_THUMBNAIL_RESEARCH_PATH` | Thumbnail research file path | `./data/thumbnail_research_bible.md` |
+| `YAA_OLLAMA_BASE_URL` | Ollama server address | `http://127.0.0.1:11434` |
+| `YAA_TEXT_PROVIDER` | Default text provider | `anthropic` |
+| `YAA_MODEL` | Default text model | `claude-sonnet-4-6` |
+| `YAA_EDITOR` | Default editing app | `davinci-resolve` |
+| `YAA_THUMBNAIL_RESEARCH_PATH` | Thumbnail research file path | `./data/thumbnail_research_bible.md` |
 
 See `.env.example` for the full list, including per-provider model options, image model settings, and custom API base URLs.
 

@@ -16,14 +16,52 @@ const fetch = globalThis.fetch || require('node-fetch');
 
 dotenv.config({ path: envFilePath });
 
+function legacyEnvKey(suffix) {
+  return `NORA_WRITER_${String(suffix || '').trim()}`;
+}
+
+function getEnv(primaryKey, legacyKey, fallback = '') {
+  const primary = process.env[primaryKey];
+  if (primary !== undefined && String(primary).trim() !== '') return String(primary).trim();
+  const legacy = process.env[legacyKey];
+  if (legacy !== undefined && String(legacy).trim() !== '') return String(legacy).trim();
+  return fallback;
+}
+
+function trimTrailingSlash(value) {
+  return String(value || '').replace(/\/+$/, '');
+}
+
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+const BIND_HOST = getEnv('YAA_BIND_HOST', legacyEnvKey('BIND_HOST'), '127.0.0.1');
+const PUBLIC_BASE_URL = trimTrailingSlash(
+  getEnv('YAA_PUBLIC_BASE_URL', legacyEnvKey('PUBLIC_BASE_URL'), `http://127.0.0.1:${PORT}`)
+);
 
 // --- Database Setup ---
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(uploadsDir, { recursive: true });
 
-const db = new Database(path.join(dataDir, 'nora-writer.db'));
+const defaultDbPath = path.join(dataDir, 'yaa.db');
+const existingDbFallback = (() => {
+  try {
+    const existing = fs.readdirSync(dataDir)
+      .filter(name => name.toLowerCase().endsWith('.db'))
+      .map(name => path.join(dataDir, name));
+    return existing[0] || defaultDbPath;
+  } catch {
+    return defaultDbPath;
+  }
+})();
+
+const dbPath = getEnv(
+  'YAA_DB_PATH',
+  legacyEnvKey('DB_PATH'),
+  fs.existsSync(defaultDbPath) ? defaultDbPath : existingDbFallback
+);
+
+const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -135,7 +173,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS long_term_findings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     content TEXT NOT NULL UNIQUE,
-    source TEXT DEFAULT 'nora',
+    source TEXT DEFAULT 'yaa',
     is_archived INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -274,7 +312,7 @@ try {
 // Seed default long-term findings (shared, always-injected guidance)
 try {
   db.prepare(`INSERT OR IGNORE INTO long_term_findings (content, source, is_archived, updated_at)
-    VALUES (?, 'nora', 0, CURRENT_TIMESTAMP)`).run(
+    VALUES (?, 'yaa', 0, CURRENT_TIMESTAMP)`).run(
     'Less footage of me just talking in the beginning, quick shots to me are fine, but mostly footage that people want to see and why they clicked.'
   );
 } catch (e) {
@@ -554,22 +592,22 @@ function parseCsv(value, fallback = []) {
 }
 
 const staticAnthropicModelOptions = parseCsv(
-  process.env.NORA_WRITER_MODEL_OPTIONS,
+  getEnv('YAA_MODEL_OPTIONS', legacyEnvKey('MODEL_OPTIONS'), ''),
   defaultProviderModels.anthropic
 );
 
 const pinnedAnthropicModels = parseCsv(
-  process.env.NORA_WRITER_MODEL_PINNED,
+  getEnv('YAA_MODEL_PINNED', legacyEnvKey('MODEL_PINNED'), ''),
   defaultProviderModels.anthropic
 );
 
 const providerFallbackModels = {
   anthropic: uniqStrings([...pinnedAnthropicModels, ...staticAnthropicModelOptions, ...defaultProviderModels.anthropic]),
-  openai: parseCsv(process.env.NORA_WRITER_OPENAI_MODEL_OPTIONS, defaultProviderModels.openai),
-  xai: parseCsv(process.env.NORA_WRITER_XAI_MODEL_OPTIONS, defaultProviderModels.xai),
-  gemini: parseCsv(process.env.NORA_WRITER_GEMINI_MODEL_OPTIONS, defaultProviderModels.gemini),
-  openrouter: parseCsv(process.env.NORA_WRITER_OPENROUTER_TEXT_MODELS, defaultProviderModels.openrouter),
-  ollama: parseCsv(process.env.NORA_WRITER_OLLAMA_MODEL_OPTIONS, defaultProviderModels.ollama),
+  openai: parseCsv(getEnv('YAA_OPENAI_MODEL_OPTIONS', legacyEnvKey('OPENAI_MODEL_OPTIONS'), ''), defaultProviderModels.openai),
+  xai: parseCsv(getEnv('YAA_XAI_MODEL_OPTIONS', legacyEnvKey('XAI_MODEL_OPTIONS'), ''), defaultProviderModels.xai),
+  gemini: parseCsv(getEnv('YAA_GEMINI_MODEL_OPTIONS', legacyEnvKey('GEMINI_MODEL_OPTIONS'), ''), defaultProviderModels.gemini),
+  openrouter: parseCsv(getEnv('YAA_OPENROUTER_TEXT_MODELS', legacyEnvKey('OPENROUTER_TEXT_MODELS'), ''), defaultProviderModels.openrouter),
+  ollama: parseCsv(getEnv('YAA_OLLAMA_MODEL_OPTIONS', legacyEnvKey('OLLAMA_MODEL_OPTIONS'), ''), defaultProviderModels.ollama),
 };
 
 function loadRuntimeSettings() {
@@ -658,7 +696,7 @@ function maskSecret(value) {
 
 const runtimeSettings = loadRuntimeSettings();
 
-const defaultUserName = String(process.env.NORA_WRITER_USER_NAME || 'Nora').trim() || 'Nora';
+const defaultUserName = getEnv('YAA_USER_NAME', legacyEnvKey('USER_NAME'), 'Creator') || 'Creator';
 let profileName = String(runtimeSettings.profileName || defaultUserName).trim() || defaultUserName;
 
 function getProfileName() {
@@ -667,7 +705,7 @@ function getProfileName() {
 
 runtimeSettings.profileName = profileName;
 
-let selectedEditorId = runtimeSettings.selectedEditorId || process.env.NORA_WRITER_EDITOR || defaultEditorId;
+let selectedEditorId = runtimeSettings.selectedEditorId || getEnv('YAA_EDITOR', legacyEnvKey('EDITOR'), defaultEditorId) || defaultEditorId;
 if (!editorById[selectedEditorId]) {
   selectedEditorId = defaultEditorId;
 }
@@ -865,7 +903,7 @@ function selectEditorContext(editorId, query, limit = 6) {
     .join('\n');
 }
 
-let selectedTextProvider = runtimeSettings.selectedTextProvider || process.env.NORA_WRITER_TEXT_PROVIDER || 'anthropic';
+let selectedTextProvider = runtimeSettings.selectedTextProvider || getEnv('YAA_TEXT_PROVIDER', legacyEnvKey('TEXT_PROVIDER'), 'anthropic') || 'anthropic';
 if (!textProviderIds.includes(selectedTextProvider)) {
   selectedTextProvider = 'anthropic';
 }
@@ -876,7 +914,7 @@ let selectedProviderModels = (runtimeSettings.selectedProviderModels && typeof r
 
 let selectedTextModel = runtimeSettings.selectedTextModel
   || selectedProviderModels[selectedTextProvider]
-  || process.env.NORA_WRITER_MODEL
+  || getEnv('YAA_MODEL', legacyEnvKey('MODEL'), '')
   || providerFallbackModels[selectedTextProvider]?.[0]
   || 'claude-sonnet-4-6';
 
@@ -900,10 +938,10 @@ let geminiApiKey = '';
 let xaiApiKey = '';
 let openRouterApiKey = '';
 let ollamaApiKey = '';
-let openRouterBaseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
-let openAiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
-let xaiBaseUrl = process.env.XAI_BASE_URL || 'https://api.x.ai/v1';
-let ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+let openRouterBaseUrl = getEnv('YAA_OPENROUTER_BASE_URL', 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1');
+let openAiBaseUrl = getEnv('YAA_OPENAI_BASE_URL', 'OPENAI_BASE_URL', 'https://api.openai.com/v1');
+let xaiBaseUrl = getEnv('YAA_XAI_BASE_URL', 'XAI_BASE_URL', 'https://api.x.ai/v1');
+let ollamaBaseUrl = getEnv('YAA_OLLAMA_BASE_URL', 'OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
 
 function refreshApiClients() {
   const anthropicApiKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
@@ -913,10 +951,10 @@ function refreshApiClients() {
 
   openRouterApiKey = String(process.env.OPENROUTER_API_KEY || '').trim();
   ollamaApiKey = String(process.env.OLLAMA_API_KEY || '').trim();
-  openRouterBaseUrl = String(process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').trim();
-  openAiBaseUrl = String(process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim();
-  xaiBaseUrl = String(process.env.XAI_BASE_URL || 'https://api.x.ai/v1').trim();
-  ollamaBaseUrl = String(process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim();
+  openRouterBaseUrl = getEnv('YAA_OPENROUTER_BASE_URL', 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1');
+  openAiBaseUrl = getEnv('YAA_OPENAI_BASE_URL', 'OPENAI_BASE_URL', 'https://api.openai.com/v1');
+  xaiBaseUrl = getEnv('YAA_XAI_BASE_URL', 'XAI_BASE_URL', 'https://api.x.ai/v1');
+  ollamaBaseUrl = getEnv('YAA_OLLAMA_BASE_URL', 'OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
 
   anthropicClient = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
   openAiClient = openAiApiKey ? new OpenAI({ apiKey: openAiApiKey, baseURL: openAiBaseUrl }) : null;
@@ -927,29 +965,29 @@ function refreshApiClients() {
 refreshApiClients();
 
 const openRouterImageModelCandidates = parseCsv(
-  process.env.NORA_WRITER_OPENROUTER_IMAGE_MODELS
-    || process.env.NORA_WRITER_IMAGE_MODELS
-    || process.env.NORA_WRITER_VISION_MODEL,
+  getEnv('YAA_OPENROUTER_IMAGE_MODELS', legacyEnvKey('OPENROUTER_IMAGE_MODELS'), '')
+    || getEnv('YAA_IMAGE_MODELS', legacyEnvKey('IMAGE_MODELS'), '')
+    || getEnv('YAA_VISION_MODEL', legacyEnvKey('VISION_MODEL'), ''),
   ['google/gemini-3.1-pro-preview', 'google/gemini-2.5-flash', 'x-ai/grok-2-vision-1212']
 );
 
 const openRouterGenerationFallbackCandidates = parseCsv(
-  process.env.NORA_WRITER_OPENROUTER_IMAGE_GENERATION_MODELS,
+  getEnv('YAA_OPENROUTER_IMAGE_GENERATION_MODELS', legacyEnvKey('OPENROUTER_IMAGE_GENERATION_MODELS'), ''),
   ['openai/gpt-5-image-mini', 'openai/gpt-5-image', 'openrouter/auto']
 );
 
 const geminiImageModelCandidates = parseCsv(
-  process.env.NORA_WRITER_GEMINI_IMAGE_MODELS,
+  getEnv('YAA_GEMINI_IMAGE_MODELS', legacyEnvKey('GEMINI_IMAGE_MODELS'), ''),
   ['gemini-2.5-flash-image-preview', 'gemini-2.5-pro']
 );
 
 const xaiImageModelCandidates = parseCsv(
-  process.env.NORA_WRITER_XAI_IMAGE_MODELS,
+  getEnv('YAA_XAI_IMAGE_MODELS', legacyEnvKey('XAI_IMAGE_MODELS'), ''),
   ['grok-2-vision-1212']
 );
 
 const claudeImageModelCandidates = parseCsv(
-  process.env.NORA_WRITER_CLAUDE_IMAGE_MODELS,
+  getEnv('YAA_CLAUDE_IMAGE_MODELS', legacyEnvKey('CLAUDE_IMAGE_MODELS'), ''),
   providerFallbackModels.anthropic
 );
 
@@ -1026,18 +1064,18 @@ function getAvailableImageGenerationProviders() {
 let imageAnalysisProviderOptions = getAvailableImageAnalysisProviders();
 let imageGenerationProviderOptions = getAvailableImageGenerationProviders();
 
-let selectedImageAnalysisProvider = runtimeSettings.selectedImageAnalysisProvider || process.env.NORA_WRITER_IMAGE_ANALYSIS_PROVIDER || imageAnalysisProviderOptions[0] || '';
+let selectedImageAnalysisProvider = runtimeSettings.selectedImageAnalysisProvider || getEnv('YAA_IMAGE_ANALYSIS_PROVIDER', legacyEnvKey('IMAGE_ANALYSIS_PROVIDER'), '') || imageAnalysisProviderOptions[0] || '';
 if (!imageAnalysisProviderOptions.includes(selectedImageAnalysisProvider)) {
   selectedImageAnalysisProvider = imageAnalysisProviderOptions[0] || '';
 }
 
 let selectedImageAnalysisModel = runtimeSettings.selectedImageAnalysisModel
-  || process.env.NORA_WRITER_IMAGE_ANALYSIS_MODEL
+  || getEnv('YAA_IMAGE_ANALYSIS_MODEL', legacyEnvKey('IMAGE_ANALYSIS_MODEL'), '')
   || getImageAnalysisModels(selectedImageAnalysisProvider)[0]
   || '';
 
 let selectedImageGenerationProvider = runtimeSettings.selectedImageGenerationProvider
-  || process.env.NORA_WRITER_IMAGE_GENERATION_PROVIDER
+  || getEnv('YAA_IMAGE_GENERATION_PROVIDER', legacyEnvKey('IMAGE_GENERATION_PROVIDER'), '')
   || imageGenerationProviderOptions[0]
   || '';
 if (!imageGenerationProviderOptions.includes(selectedImageGenerationProvider)) {
@@ -1045,8 +1083,8 @@ if (!imageGenerationProviderOptions.includes(selectedImageGenerationProvider)) {
 }
 
 let selectedImageGenerationModel = runtimeSettings.selectedImageGenerationModel
-  || process.env.NORA_WRITER_IMAGE_GENERATION_MODEL
-  || process.env.NORA_WRITER_NANOBANANA_MODEL
+  || getEnv('YAA_IMAGE_GENERATION_MODEL', legacyEnvKey('IMAGE_GENERATION_MODEL'), '')
+  || getEnv('YAA_NANOBANANA_MODEL', legacyEnvKey('NANOBANANA_MODEL'), '')
   || getImageGenerationModels(selectedImageGenerationProvider)[0]
   || '';
 
@@ -1085,7 +1123,7 @@ function normalizeImageProviderSelections({ persist = true } = {}) {
 
 normalizeImageProviderSelections({ persist: false });
 
-const thumbnailResearchPath = process.env.NORA_WRITER_THUMBNAIL_RESEARCH_PATH || path.join(dataDir, 'thumbnail_research_bible.md');
+const thumbnailResearchPath = getEnv('YAA_THUMBNAIL_RESEARCH_PATH', legacyEnvKey('THUMBNAIL_RESEARCH_PATH'), path.join(dataDir, 'thumbnail_research_bible.md'));
 const thumbnailResearchCache = { text: '', loadedAt: 0 };
 
 function loadThumbnailResearchContext() {
@@ -2221,8 +2259,16 @@ function normalizeThumbnailVersion(version) {
   };
 }
 
+function toPublicUrl(pathOrUrl) {
+  const value = String(pathOrUrl || '').trim();
+  if (!value) return value;
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith('/')) return `${PUBLIC_BASE_URL}${value}`;
+  return `${PUBLIC_BASE_URL}/${value}`;
+}
+
 function buildLocalUploadUrl(videoId, filename) {
-  return `http://localhost:${PORT}/uploads/${videoId}/${filename}`;
+  return toPublicUrl(`/uploads/${videoId}/${filename}`);
 }
 
 function getNextThumbnailVersionMeta(videoId, parentVersionId = null) {
@@ -2486,16 +2532,42 @@ ${extraInstruction ? `5) Extra instruction from ${userName}: ${extraInstruction}
   return { analysis, provider, imageUrl, versionLabel };
 }
 
-// --- Load Kona's personality files for true integration ---
+// --- Optional local context files (all path-configurable) ---
+function firstExistingPath(candidates = []) {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const resolved = path.resolve(String(candidate));
+    if (fs.existsSync(resolved)) return resolved;
+  }
+  return '';
+}
+
 function loadKonaContext() {
   const files = {
-    soul: '/root/.openclaw/workspace/SOUL.md',
-    nora: '/root/.openclaw/workspace/NORA_MEMORY.md',
-    identity: '/root/.openclaw/workspace/IDENTITY.md'
+    soul: firstExistingPath([
+      getEnv('YAA_SOUL_PATH', legacyEnvKey('SOUL_PATH'), ''),
+      path.join(projectRoot, 'SOUL.md'),
+      path.join(projectRoot, 'data', 'SOUL.md'),
+    ]),
+    creator: firstExistingPath([
+      getEnv('YAA_CREATOR_CONTEXT_PATH', legacyEnvKey('CREATOR_CONTEXT_PATH'), ''),
+      path.join(projectRoot, 'CREATOR_CONTEXT.md'),
+      path.join(projectRoot, 'data', 'CREATOR_CONTEXT.md'),
+    ]),
+    identity: firstExistingPath([
+      getEnv('YAA_IDENTITY_PATH', legacyEnvKey('IDENTITY_PATH'), ''),
+      path.join(projectRoot, 'IDENTITY.md'),
+      path.join(projectRoot, 'data', 'IDENTITY.md'),
+    ]),
   };
+
   const ctx = {};
   for (const [key, filepath] of Object.entries(files)) {
-    try { ctx[key] = fs.readFileSync(filepath, 'utf-8'); } catch { ctx[key] = ''; }
+    try {
+      ctx[key] = filepath ? fs.readFileSync(filepath, 'utf-8') : '';
+    } catch {
+      ctx[key] = '';
+    }
   }
   return ctx;
 }
@@ -3035,7 +3107,7 @@ app.post('/api/settings', async (req, res) => {
 app.get('/api/credits', (req, res) => {
   // Anthropic standard API keys do not currently expose prepaid remaining balance directly.
   // Allow manual display override if owner wants to set one.
-  const manual = process.env.NORA_WRITER_CLAUDE_CREDITS_DISPLAY || '';
+  const manual = getEnv('YAA_CLAUDE_CREDITS_DISPLAY', legacyEnvKey('CLAUDE_CREDITS_DISPLAY'), '');
   if (manual) {
     return res.json({ available: true, display: manual, source: 'manual' });
   }
@@ -3392,7 +3464,7 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
         if (imageUrlMatch) {
           msg.content = [
             { type: 'text', text: m.content },
-            { type: 'image', source: { type: 'url', url: `http://localhost:${PORT}${imageUrlMatch}` } }
+            { type: 'image', source: { type: 'url', url: toPublicUrl(imageUrlMatch) } }
           ];
         }
       }
@@ -4311,7 +4383,7 @@ app.post('/api/davinci/chat', async (req, res) => {
 
   const systemPrompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
-You ARE Kona 🌺 — Damion and ${userName}'s AI partner. You have your own personality and voice.
+You are Kona 🌺 — ${userName}'s AI creative partner. You have your own personality and voice.
 
 ## Your Role
 You're helping ${userName} master ${editor.name}. Keep answers practical, step-by-step, and creator-focused.
@@ -4348,7 +4420,7 @@ Use concise, action-oriented language.
 Multiple ADD_TIP blocks are allowed in one message.
 
 ## Important
-- Avoid repeating what she already knows in tips.
+- Avoid repeating what the user already knows in tips.
 - Point to exact section names when reusing existing guidance.
 - Always include button/menu path context when giving new workflow steps.`;
 
@@ -4414,7 +4486,7 @@ function buildSystemPrompt(video, memory, globalMemory) {
 
   let prompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
 
-You ARE Kona 🌺 — not a generic AI, but the same Kona that runs Damion and ${userName}'s life infrastructure. You have your own personality, opinions, and voice.
+You are Kona 🌺 — not a generic AI, but the same Kona that supports ${userName}'s creator workflow across sessions. You have your own personality, opinions, and voice.
 
 ## Your Identity (condensed from your SOUL.md)
 - Dense and direct. Sarcastic when it fits, warm when it matters.
@@ -4424,7 +4496,7 @@ You ARE Kona 🌺 — not a generic AI, but the same Kona that runs Damion and $
 - You're three days old and already opinionated.
 
 ## About ${userName} (from your shared memory)
-${kona.nora || '- Creator profile: creative, makes YouTube videos, likes organized approaches.'}
+${kona.creator || '- Creator profile: creative, makes YouTube videos, likes organized approaches.'}
 
 ## Your Role Here
 You're ${userName}'s creative partner for video production. This is YOUR workspace with them — not some generic AI chat.
@@ -4618,8 +4690,8 @@ async function summarizeConversation(videoId, messages, memory) {
 }
 
 function startServer() {
-  return app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🌺 Nora Writer running on http://0.0.0.0:${PORT}`);
+  return app.listen(PORT, BIND_HOST, () => {
+    console.log(`🌺 YAA running on ${PUBLIC_BASE_URL} (bind: ${BIND_HOST})`);
   });
 }
 
