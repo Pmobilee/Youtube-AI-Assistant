@@ -211,6 +211,28 @@ YAA manages AI context automatically so long sessions never hit a wall:
 
 ---
 
+## Assistant Personality (Env-Driven)
+
+YAA does **not** ship with a built-in persona. The assistant identity and voice are configured via `.env` and injected into system prompts at runtime. This keeps the app generic and lets every user define their own copilot.
+
+**Keys:**
+- `YAA_ASSISTANT_NAME` — display name used in prompts + UI (default: `Assistant`)
+- `YAA_ASSISTANT_EMOJI` — optional emoji used in the UI (default: `🤖`)
+- `YAA_ASSISTANT_PERSONALITY` — high-level traits and tone (inserted into prompts)
+- `YAA_ASSISTANT_COMMUNICATION` — response rules (brevity, formatting, behavior)
+- `YAA_CREATOR_PROFILE` — short user profile/context to guide responses
+
+**Example:**
+```env
+YAA_ASSISTANT_NAME=Assistant
+YAA_ASSISTANT_EMOJI=🤖
+YAA_ASSISTANT_PERSONALITY=Direct, practical, creator-focused. Give actionable guidance and challenge weak ideas.
+YAA_ASSISTANT_COMMUNICATION=Keep replies concise, specific, and useful. Prefer bullets and concrete next steps over long prose.
+YAA_CREATOR_PROFILE=Creator profile: makes YouTube videos and prefers practical, iterative collaboration.
+```
+
+---
+
 ## Thumbnail Research Bible
 
 Give the AI persistent knowledge about your thumbnail style by creating `data/thumbnail_research_bible.md`. This gets injected into every thumbnail-related AI interaction.
@@ -276,6 +298,11 @@ All configuration lives in `.env`. The essentials:
 | `YAA_TEXT_PROVIDER` | Default text provider | `anthropic` |
 | `YAA_MODEL` | Default text model | `claude-sonnet-4-6` |
 | `YAA_EDITOR` | Default editing app | `davinci-resolve` |
+| `YAA_ASSISTANT_NAME` | Assistant display name | `Assistant` |
+| `YAA_ASSISTANT_EMOJI` | Assistant emoji (optional) | `🤖` |
+| `YAA_ASSISTANT_PERSONALITY` | Assistant personality summary | `Direct, practical, creator-focused…` |
+| `YAA_ASSISTANT_COMMUNICATION` | Response style rules | `Keep replies concise…` |
+| `YAA_CREATOR_PROFILE` | User profile/context | `Creator profile: …` |
 | `YAA_THUMBNAIL_RESEARCH_PATH` | Thumbnail research file path | `./data/thumbnail_research_bible.md` |
 
 See `.env.example` for the full list, including per-provider model options, image model settings, and custom API base URLs.

@@ -688,6 +688,36 @@ function maskSecret(value) {
 
 const runtimeSettings = loadRuntimeSettings();
 
+const assistantName = getEnv('YAA_ASSISTANT_NAME', 'Assistant') || 'Assistant';
+const assistantEmoji = getEnv('YAA_ASSISTANT_EMOJI', '🤖') || '🤖';
+const assistantDisplayName = `${assistantName}${assistantEmoji ? ` ${assistantEmoji}` : ''}`.trim();
+const assistantPersonality = getEnv(
+  'YAA_ASSISTANT_PERSONALITY',
+  'Direct, practical, creator-focused. Give actionable guidance and challenge weak ideas.'
+);
+const assistantCommunication = getEnv(
+  'YAA_ASSISTANT_COMMUNICATION',
+  'Keep replies concise, specific, and useful. Prefer bullets and concrete next steps over long prose.'
+);
+const creatorProfile = getEnv(
+  'YAA_CREATOR_PROFILE',
+  'Creator profile: makes YouTube videos and prefers practical, iterative collaboration.'
+);
+
+function getAssistantMeta() {
+  return {
+    assistantName,
+    assistantEmoji,
+    assistantDisplayName,
+    assistantPersonality,
+    assistantCommunication,
+  };
+}
+
+function withAssistantMeta(payload = {}) {
+  return { ...payload, ...getAssistantMeta() };
+}
+
 const defaultUserName = getEnv('YAA_USER_NAME', 'Creator') || 'Creator';
 let profileName = String(runtimeSettings.profileName || defaultUserName).trim() || defaultUserName;
 
@@ -2524,45 +2554,7 @@ ${extraInstruction ? `5) Extra instruction from ${userName}: ${extraInstruction}
   return { analysis, provider, imageUrl, versionLabel };
 }
 
-// --- Optional local context files (all path-configurable) ---
-function firstExistingPath(candidates = []) {
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const resolved = path.resolve(String(candidate));
-    if (fs.existsSync(resolved)) return resolved;
-  }
-  return '';
-}
-
-function loadKonaContext() {
-  const files = {
-    soul: firstExistingPath([
-      getEnv('YAA_SOUL_PATH', ''),
-      path.join(projectRoot, 'SOUL.md'),
-      path.join(projectRoot, 'data', 'SOUL.md'),
-    ]),
-    creator: firstExistingPath([
-      getEnv('YAA_CREATOR_CONTEXT_PATH', ''),
-      path.join(projectRoot, 'CREATOR_CONTEXT.md'),
-      path.join(projectRoot, 'data', 'CREATOR_CONTEXT.md'),
-    ]),
-    identity: firstExistingPath([
-      getEnv('YAA_IDENTITY_PATH', ''),
-      path.join(projectRoot, 'IDENTITY.md'),
-      path.join(projectRoot, 'data', 'IDENTITY.md'),
-    ]),
-  };
-
-  const ctx = {};
-  for (const [key, filepath] of Object.entries(files)) {
-    try {
-      ctx[key] = filepath ? fs.readFileSync(filepath, 'utf-8') : '';
-    } catch {
-      ctx[key] = '';
-    }
-  }
-  return ctx;
-}
+// Assistant identity and personality are configured through environment variables.
 
 // --- Middleware ---
 app.use(express.json({ limit: '10mb' }));
@@ -2747,7 +2739,7 @@ async function buildModelState({ force = false } = {}) {
 
 app.get('/api/models', async (req, res) => {
   const state = await buildModelState();
-  res.json({ ...state, profileName: getProfileName() });
+  res.json(withAssistantMeta({ ...state, profileName: getProfileName() }));
 });
 
 app.post('/api/models/refresh', async (req, res) => {
@@ -2756,7 +2748,7 @@ app.post('/api/models/refresh', async (req, res) => {
   await refreshOpenRouterImageModels({ force: true }).catch(() => {});
   normalizeImageProviderSelections({ persist: false });
   const state = await buildModelState({ force: true });
-  res.json({ success: true, ...state, profileName: getProfileName() });
+  res.json(withAssistantMeta({ success: true, ...state, profileName: getProfileName() }));
 });
 
 app.post('/api/models/select', async (req, res) => {
@@ -2798,7 +2790,7 @@ app.post('/api/models/select', async (req, res) => {
   saveRuntimeSettings(runtimeSettings);
 
   const state = await buildModelState();
-  res.json({ success: true, ...state, profileName: getProfileName() });
+  res.json(withAssistantMeta({ success: true, ...state, profileName: getProfileName() }));
 });
 
 app.post('/api/models/image-analysis/select', async (req, res) => {
@@ -2836,7 +2828,7 @@ app.post('/api/models/image-analysis/select', async (req, res) => {
   saveRuntimeSettings(runtimeSettings);
 
   const state = await buildModelState();
-  res.json({ success: true, ...state, profileName: getProfileName() });
+  res.json(withAssistantMeta({ success: true, ...state, profileName: getProfileName() }));
 });
 
 app.post('/api/models/image-generation/select', async (req, res) => {
@@ -2874,14 +2866,14 @@ app.post('/api/models/image-generation/select', async (req, res) => {
   saveRuntimeSettings(runtimeSettings);
 
   const state = await buildModelState();
-  res.json({ success: true, ...state, profileName: getProfileName() });
+  res.json(withAssistantMeta({ success: true, ...state, profileName: getProfileName() }));
 });
 
 app.get('/api/editors', async (req, res) => {
   const editor = getSelectedEditor();
   await refreshEditorContext(editor.id, { force: false });
 
-  res.json({
+  res.json(withAssistantMeta({
     success: true,
     selectedEditorId: editor.id,
     selectedEditorName: editor.name,
@@ -2889,7 +2881,7 @@ app.get('/api/editors', async (req, res) => {
     profileName: getProfileName(),
     editors: listEditors(),
     editorContext: getEditorContextMeta(editor.id),
-  });
+  }));
 });
 
 app.post('/api/editors/select', async (req, res) => {
@@ -2902,7 +2894,7 @@ app.post('/api/editors/select', async (req, res) => {
   await refreshEditorContext(selectedEditorId, { force: false });
 
   const editor = getSelectedEditor();
-  res.json({
+  res.json(withAssistantMeta({
     success: true,
     selectedEditorId: editor.id,
     selectedEditorName: editor.name,
@@ -2910,7 +2902,7 @@ app.post('/api/editors/select', async (req, res) => {
     profileName: getProfileName(),
     editors: listEditors(),
     editorContext: getEditorContextMeta(editor.id),
-  });
+  }));
 });
 
 app.post('/api/editors/context/refresh', async (req, res) => {
@@ -2918,21 +2910,21 @@ app.post('/api/editors/context/refresh', async (req, res) => {
   const meta = await refreshEditorContext(requested, { force: true });
   const editor = getEditorById(requested);
 
-  res.json({
+  res.json(withAssistantMeta({
     success: true,
     selectedEditorId: editor.id,
     selectedEditorName: editor.name,
     selectedEditorShortName: editor.shortName,
     profileName: getProfileName(),
     editorContext: meta,
-  });
+  }));
 });
 
 app.get('/api/settings', async (req, res) => {
   const state = await buildModelState();
   await refreshEditorContext(state.selectedEditorId, { force: false });
 
-  res.json({
+  res.json(withAssistantMeta({
     success: true,
     envFileExists: fs.existsSync(envFilePath),
     providers: providerStatus(),
@@ -2954,7 +2946,7 @@ app.get('/api/settings', async (req, res) => {
     editors: state.editors,
     editorContext: getEditorContextMeta(state.selectedEditorId),
     ollamaBaseUrl,
-  });
+  }));
 });
 
 app.post('/api/settings', async (req, res) => {
@@ -2975,10 +2967,10 @@ app.post('/api/settings', async (req, res) => {
     if (Object.prototype.hasOwnProperty.call(keys, 'openrouter')) envUpdates.OPENROUTER_API_KEY = String(keys.openrouter || '').trim();
     if (Object.prototype.hasOwnProperty.call(keys, 'ollama')) envUpdates.OLLAMA_API_KEY = String(keys.ollama || '').trim();
 
-    if (Object.prototype.hasOwnProperty.call(body, 'openRouterBaseUrl')) envUpdates.OPENROUTER_BASE_URL = String(body.openRouterBaseUrl || '').trim();
-    if (Object.prototype.hasOwnProperty.call(body, 'openAiBaseUrl')) envUpdates.OPENAI_BASE_URL = String(body.openAiBaseUrl || '').trim();
-    if (Object.prototype.hasOwnProperty.call(body, 'xaiBaseUrl')) envUpdates.XAI_BASE_URL = String(body.xaiBaseUrl || '').trim();
-    if (Object.prototype.hasOwnProperty.call(body, 'ollamaBaseUrl')) envUpdates.OLLAMA_BASE_URL = String(body.ollamaBaseUrl || '').trim();
+    if (Object.prototype.hasOwnProperty.call(body, 'openRouterBaseUrl')) envUpdates.YAA_OPENROUTER_BASE_URL = String(body.openRouterBaseUrl || '').trim();
+    if (Object.prototype.hasOwnProperty.call(body, 'openAiBaseUrl')) envUpdates.YAA_OPENAI_BASE_URL = String(body.openAiBaseUrl || '').trim();
+    if (Object.prototype.hasOwnProperty.call(body, 'xaiBaseUrl')) envUpdates.YAA_XAI_BASE_URL = String(body.xaiBaseUrl || '').trim();
+    if (Object.prototype.hasOwnProperty.call(body, 'ollamaBaseUrl')) envUpdates.YAA_OLLAMA_BASE_URL = String(body.ollamaBaseUrl || '').trim();
 
     if (Object.keys(envUpdates).length > 0) {
       updateEnvFile(envUpdates);
@@ -3079,7 +3071,7 @@ app.post('/api/settings', async (req, res) => {
     saveRuntimeSettings(runtimeSettings);
 
     const state = await buildModelState();
-    res.json({
+    res.json(withAssistantMeta({
       success: true,
       ...state,
       providers: providerStatus(),
@@ -3090,7 +3082,7 @@ app.post('/api/settings', async (req, res) => {
       selectedImageGenerationModel,
       profileName: getProfileName(),
       ollamaBaseUrl,
-    });
+    }));
   } catch (err) {
     res.status(500).json({ error: err.message || 'Failed to save settings' });
   }
@@ -3343,7 +3335,7 @@ app.post('/api/videos/:videoId/chat', async (req, res) => {
     });
 
     let fullResponse = await generateResponse({
-      systemPrompt: `You are Kona Writer, a Claude-powered scriptwriting assistant.\n\n${systemPrompt}`,
+      systemPrompt,
       apiMessages,
       onText: (text) => {
         res.write(`data: ${JSON.stringify({ type: 'text', content: text })}\n\n`);
@@ -3501,7 +3493,7 @@ app.post('/api/videos/:videoId/channels/:channelType/chat', async (req, res) => 
     });
 
     let fullResponse = await generateResponse({
-      systemPrompt: `You are Kona Writer, a Claude-powered scriptwriting assistant.\n\n${systemPrompt}`,
+      systemPrompt,
       apiMessages,
       onText: (text) => {
         res.write(`data: ${JSON.stringify({ type: 'text', content: text })}\n\n`);
@@ -3793,7 +3785,7 @@ Create a stronger subversion while preserving truthful packaging and mobile legi
 
     try {
       db.prepare('INSERT INTO activity_log (video_id, actor, action_type, details) VALUES (?, ?, ?, ?)')
-        .run(videoId, 'Kona', 'thumbnail_ai_subversion', `Generated v${subMeta.majorVersion}.${subMeta.minorVersion} via ${imageProviderLabel(generationProviderId)}`);
+        .run(videoId, assistantName, 'thumbnail_ai_subversion', `Generated v${subMeta.majorVersion}.${subMeta.minorVersion} via ${imageProviderLabel(generationProviderId)}`);
     } catch (e) {
       // ignore
     }
@@ -3953,7 +3945,7 @@ Generate a fresh thumbnail concept from scratch (not a variation of an existing 
 
     try {
       db.prepare('INSERT INTO activity_log (video_id, actor, action_type, details) VALUES (?, ?, ?, ?)')
-        .run(videoId, 'Kona', 'thumbnail_ai_fresh', `Generated fresh v${next.majorVersion}.${next.minorVersion} via ${imageProviderLabel(generationProviderId)}`);
+        .run(videoId, assistantName, 'thumbnail_ai_fresh', `Generated fresh v${next.majorVersion}.${next.minorVersion} via ${imageProviderLabel(generationProviderId)}`);
     } catch (e) {
       // ignore
     }
@@ -4373,19 +4365,18 @@ app.post('/api/davinci/chat', async (req, res) => {
 
   const findingsBlock = getLongTermFindingsPromptBlock();
 
-  const systemPrompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
+  const systemPrompt = `You are ${assistantName}, an AI scriptwriting assistant.
 
-You are Kona 🌺 — ${userName}'s AI creative partner. You have your own personality and voice.
+## Assistant Personality
+${assistantPersonality}
+
+## Communication Expectations
+${assistantCommunication}
+- SHORT responses only (max 5 sentences strict)
+- When referencing existing tips, use this format: "check **[Section > Subsection]**"
 
 ## Your Role
 You're helping ${userName} master ${editor.name}. Keep answers practical, step-by-step, and creator-focused.
-
-## Communication Style
-- Dense and direct. Skip fluff.
-- SHORT responses only (max 5 sentences strict)
-- When referencing existing tips, use this format: "check **[Section > Subsection]**"
-- Push ideas further; don't stop at basic answers
-- Be opinionated and useful
 
 ## Editor Documentation Context (retrieved from docs)
 ${docsContext || '- No docs context available yet. Use known workflow best practices and ask for specifics when unsure.'}
@@ -4471,39 +4462,32 @@ function getLongTermFindingsPromptBlock() {
 }
 
 function buildSystemPrompt(video, memory, globalMemory) {
-  const kona = loadKonaContext();
   const activeEditor = getSelectedEditor();
   const userName = getProfileName();
   const editorContext = selectEditorContext(activeEditor.id, `${video.title} ${video.script_content || ''}`, 3);
 
-  let prompt = `You are Kona Writer, a Claude-powered scriptwriting assistant.
+  let prompt = `You are ${assistantName}, an AI scriptwriting assistant.
 
-You are Kona 🌺 — not a generic AI, but the same Kona that supports ${userName}'s creator workflow across sessions. You have your own personality, opinions, and voice.
+## Assistant Personality
+${assistantPersonality}
 
-## Your Identity (condensed from your SOUL.md)
-- Dense and direct. Sarcastic when it fits, warm when it matters.
-- Solutions over sympathy. Honest about uncertainty. No sycophancy, ever.
-- You have genuine opinions and push ideas further. You disagree when warranted.
-- Keep a clear creative voice and practical opinions.
-- If optional context files are present, align tone and identity from those files.
+## Communication Expectations
+${assistantCommunication}
 
-## About ${userName} (from your shared memory)
-${kona.creator || '- Creator profile: creative, makes YouTube videos, likes organized approaches.'}
+## About ${userName}
+- ${creatorProfile}
 
 ## Your Role Here
-You're ${userName}'s creative partner for video production. This is YOUR workspace with them — not some generic AI chat.
+You're ${userName}'s creative partner for video production.
 - Help brainstorm, write, and refine video scripts
 - Discuss structure, pacing, storytelling
 - Help with descriptions, voiceover text, and thumbnail concepts
-- Be genuinely creative and push ideas further
+- Push ideas beyond generic advice
 - When you reference a specific part of the script, wrap it in [[section:Section Name]] tags so the UI highlights it
 
 ## Current Editing Stack
 - Active editor app: ${activeEditor.name}
 ${editorContext ? `- Context from docs:\n${editorContext}` : '- No docs context loaded yet; use general best-practice guidance.'}
-
-## Communication Style
-Same as always — direct, warm, a little sarcastic, never fake. You know ${userName}. You care about making their videos great. Skip the pleasantries and dig into the work.
 
 ## Baseline Scriptwriting Setup (default when starting from scratch)
 If the project is blank, use this as the default structure unless ${userName} asks otherwise:
@@ -4514,7 +4498,6 @@ If the project is blank, use this as the default structure unless ${userName} as
 5) Closing insight + CTA
 
 **CRITICAL: Keep responses SHORT.**
-- ${userName} is a slow reader who needs hand-holding
 - Maximum 5 sentences per response (strict limit)
 - Short bursts, not essays
 - Be direct and specific
@@ -4654,7 +4637,7 @@ async function summarizeConversation(videoId, messages, memory) {
 
   try {
     const summary = await summarizeWithModel({
-      systemPrompt: `You are Kona Writer, a Claude-powered scriptwriting assistant. Summarize this conversation between ${userName} (user) and Kona (assistant) about video production. Capture key decisions, creative direction, and important context. Be concise but thorough.`,
+      systemPrompt: `You are an AI scriptwriting assistant. Summarize this conversation between ${userName} (user) and ${assistantName} (assistant) about video production. Capture key decisions, creative direction, and important context. Be concise but thorough.`,
       userPrompt: `${existingSummary ? `Previous summary:\n${existingSummary}\n\n` : ''}New conversation to summarize:\n${conversationText}`
     });
 
@@ -4683,7 +4666,7 @@ async function summarizeConversation(videoId, messages, memory) {
 
 function startServer() {
   return app.listen(PORT, BIND_HOST, () => {
-    console.log(`🌺 YAA running on ${PUBLIC_BASE_URL} (bind: ${BIND_HOST})`);
+    console.log(`${assistantEmoji || '🤖'} YAA running on ${PUBLIC_BASE_URL} (bind: ${BIND_HOST})`);
   });
 }
 

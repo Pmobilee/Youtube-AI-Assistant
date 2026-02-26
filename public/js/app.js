@@ -20,6 +20,9 @@ let selectedEditorShortName = 'DaVinci';
 let selectedEditorTipsTitle = 'DaVinci Resolve Tips & Tricks';
 let selectedEditorChatTitle = 'DaVinci Chat';
 let currentUserName = 'Creator';
+let assistantName = 'Assistant';
+let assistantEmoji = '🤖';
+let assistantDisplayName = 'Assistant 🤖';
 let availableEditors = [];
 let editorContextMeta = null;
 let thumbnailVersions = [];
@@ -42,6 +45,18 @@ const channelToTabMap = {
 // === DOM refs ===
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+
+function getAssistantDisplayName() {
+  return String(assistantDisplayName || assistantName || 'Assistant').trim() || 'Assistant';
+}
+
+function getAssistantName() {
+  return String(assistantName || 'Assistant').trim() || 'Assistant';
+}
+
+function getAssistantEmoji() {
+  return String(assistantEmoji || '').trim();
+}
 
 // === Theme ===
 function initTheme() {
@@ -105,6 +120,14 @@ function updateEditorThemes() {
   Object.values(editors).forEach(ed => {
     if (ed && ed.setOption) ed.setOption('theme', theme);
   });
+}
+
+function applyAssistantBranding() {
+  const assistant = getAssistantName();
+  const title = $('#assistant-chat-title');
+  if (title) title.textContent = `💬 Chat with ${assistant}`;
+  const chatInput = $('#chat-input');
+  if (chatInput) chatInput.placeholder = `Message ${assistant}...`;
 }
 
 // === Model + Settings ===
@@ -242,13 +265,14 @@ function applyEditorBranding() {
   const chatTitle = $('#editor-chat-title');
   if (chatTitle) chatTitle.textContent = `💬 ${selectedEditorChatTitle}`;
   const chatSubtitle = $('#editor-chat-subtitle');
-  if (chatSubtitle) chatSubtitle.textContent = `Ask Kona about ${selectedEditorName}`;
+  if (chatSubtitle) chatSubtitle.textContent = `Ask ${getAssistantName()} about ${selectedEditorName}`;
   const chatWelcome = $('#editor-chat-welcome');
   if (chatWelcome) {
-    chatWelcome.innerHTML = `🌺 <strong>Hey ${escapeHtml(currentUserName)}!</strong> Ask me anything about ${selectedEditorName}. I’ve got your ${selectedEditorName} tips doc loaded, so I know what you already know.`;
+    const emoji = getAssistantEmoji();
+    chatWelcome.innerHTML = `${emoji ? `${escapeHtml(emoji)} ` : ''}<strong>Hey ${escapeHtml(currentUserName)}!</strong> Ask me anything about ${selectedEditorName}. I’ve got your ${selectedEditorName} tips doc loaded, so I know what you already know.`;
   }
   const chatInput = $('#davinci-input');
-  if (chatInput) chatInput.placeholder = `Ask about ${selectedEditorName}...`;
+  if (chatInput) chatInput.placeholder = `Ask ${getAssistantName()} about ${selectedEditorName}...`;
 
   const tipsTitle = $('#editor-tips-title');
   if (tipsTitle) tipsTitle.textContent = `📚 ${selectedEditorTipsTitle}`;
@@ -262,6 +286,9 @@ function applyEditorBranding() {
   window.getActiveEditorTipsTitle = () => selectedEditorTipsTitle;
   window.getActiveEditorChatTitle = () => selectedEditorChatTitle;
   window.getCurrentUserName = () => currentUserName;
+  window.getAssistantName = () => getAssistantName();
+  window.getAssistantEmoji = () => getAssistantEmoji();
+  window.getAssistantDisplayName = () => getAssistantDisplayName();
 }
 
 function normalizeModelState(data = {}) {
@@ -285,6 +312,9 @@ function normalizeModelState(data = {}) {
     selectedEditorName: data.selectedEditorName || selectedEditorName,
     selectedEditorShortName: data.selectedEditorShortName || selectedEditorShortName,
     profileName: data.profileName || data.userName || currentUserName,
+    assistantName: data.assistantName || assistantName,
+    assistantEmoji: data.assistantEmoji || assistantEmoji,
+    assistantDisplayName: data.assistantDisplayName || `${data.assistantName || assistantName} ${data.assistantEmoji || assistantEmoji}`.trim(),
     editors: data.editors || availableEditors,
     editorContext: data.editorContext || editorContextMeta,
   };
@@ -304,8 +334,13 @@ function applyModelState(rawState = {}) {
   availableTextProviders = Array.isArray(state.textProviders) ? state.textProviders : [];
   selectedEditorId = state.selectedEditorId || selectedEditorId;
   currentUserName = String(state.profileName || currentUserName || 'Creator').trim() || 'Creator';
+  assistantName = String(state.assistantName || assistantName || 'Assistant').trim() || 'Assistant';
+  assistantEmoji = String(state.assistantEmoji || assistantEmoji || '🤖').trim() || '🤖';
+  assistantDisplayName = String(state.assistantDisplayName || `${assistantName} ${assistantEmoji}`.trim()).trim() || assistantName;
   availableEditors = Array.isArray(state.editors) ? state.editors : availableEditors;
   editorContextMeta = state.editorContext || editorContextMeta;
+
+  applyAssistantBranding();
 
   const editorMeta = getEditorMeta(selectedEditorId, state);
   selectedEditorName = editorMeta.name || selectedEditorName;
@@ -1200,7 +1235,7 @@ async function loadMessages(videoId) {
   if (messages.length === 0) {
     container.innerHTML = `
       <div class="chat-welcome">
-        <p>🌺 <strong>Kona here!</strong> Ready to work on "${escapeHtml(currentVideo.title)}" together. What's the vision?</p>
+        <p>${getAssistantEmoji() ? `${escapeHtml(getAssistantEmoji())} ` : ''}<strong>${escapeHtml(getAssistantName())} here!</strong> Ready to work on "${escapeHtml(currentVideo.title)}" together. What's the vision?</p>
       </div>
     `;
     return;
@@ -1250,7 +1285,7 @@ async function loadChannelMessages(videoId, channel) {
     
     container.innerHTML = `
       <div class="chat-welcome">
-        <p>🌺 <strong>Kona here!</strong> ${welcomeText}. What are you thinking?</p>
+        <p>${getAssistantEmoji() ? `${escapeHtml(getAssistantEmoji())} ` : ''}<strong>${escapeHtml(getAssistantName())} here!</strong> ${welcomeText}. What are you thinking?</p>
       </div>
     `;
     return;
@@ -1261,7 +1296,7 @@ async function loadChannelMessages(videoId, channel) {
 }
 
 function renderMessage(role, content, imageUrl = null) {
-  const sender = role === 'user' ? currentUserName : 'Kona 🌺';
+  const sender = role === 'user' ? currentUserName : getAssistantDisplayName();
   const processed = processMessageContent(content, role === 'assistant');
   
   // If there's an image URL, display it before the text
@@ -1318,7 +1353,7 @@ function processMessageContent(content, isAssistant) {
   // Lists
   html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
   html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
-  // Section references (Kona's [[section:Name]] tags)
+  // Section references ([[section:Name]] tags)
   if (isAssistant) {
     html = html.replace(/\[\[section:(.+?)\]\]/g, '<span class="section-ref" onclick="scrollToSection(\'$1\')">📌 <u>$1</u></span>');
   }
@@ -1570,7 +1605,7 @@ async function handleChatImage(file) {
   const streamId = `stream-${Date.now()}`;
   $('#chat-messages').insertAdjacentHTML('beforeend', `
     <div class="chat-message assistant" id="${streamId}">
-      <span class="sender">Kona 🌺</span>
+      <span class="sender">${escapeHtml(getAssistantDisplayName())}</span>
       <div class="bubble"><span class="streaming-indicator"><span></span></span></div>
     </div>
   `);
@@ -1643,7 +1678,7 @@ async function sendMessage() {
   const streamId = `stream-${Date.now()}`;
   $('#chat-messages').insertAdjacentHTML('beforeend', `
     <div class="chat-message assistant" id="${streamId}">
-      <span class="sender">Kona 🌺</span>
+      <span class="sender">${escapeHtml(getAssistantDisplayName())}</span>
       <div class="bubble"><span class="streaming-indicator"><span></span></span></div>
     </div>
   `);
@@ -2852,7 +2887,7 @@ async function clearChat() {
     
     container.innerHTML = `
       <div class="chat-welcome">
-        <p>🌺 <strong>Kona here!</strong> ${welcomeText}. What are you thinking?</p>
+        <p>${getAssistantEmoji() ? `${escapeHtml(getAssistantEmoji())} ` : ''}<strong>${escapeHtml(getAssistantName())} here!</strong> ${welcomeText}. What are you thinking?</p>
       </div>
     `;
     
@@ -3083,16 +3118,29 @@ async function loadTimeline() {
     'template': '📋'
   };
   
+  const normalizeActorKey = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim();
+  const creatorKey = normalizeActorKey(currentUserName);
+  const assistantKey = normalizeActorKey(assistantName || assistantDisplayName);
+
+  const getActorClass = (actor) => {
+    const key = normalizeActorKey(actor);
+    if (!key) return 'assistant';
+    if (creatorKey && key === creatorKey) return 'creator';
+    if (assistantKey && key === assistantKey) return 'assistant';
+    return key || 'assistant';
+  };
+
   panel.innerHTML = Object.entries(grouped).map(([date, items]) => `
     <div class="timeline-date">
       <h4>${date}</h4>
       ${items.map(a => {
         const time = new Date(a.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const icon = icons[a.action_type] || '🔵';
+        const actorClass = getActorClass(a.actor);
         return `<div class="timeline-item">
           <span class="timeline-time">${time}</span>
           <span class="timeline-icon">${icon}</span>
-          <span class="timeline-actor ${a.actor.toLowerCase()}">${a.actor}</span>
+          <span class="timeline-actor ${actorClass}">${a.actor}</span>
           <span class="timeline-detail">${escapeHtml(a.details || a.action_type)}</span>
         </div>`;
       }).join('')}

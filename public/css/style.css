@@ -1566,11 +1566,11 @@ body {
   min-width: 40px; 
 }
 
-.timeline-actor.nora { 
+.timeline-actor.creator { 
   color: #ec4899; 
 }
 
-.timeline-actor.kona { 
+.timeline-actor.assistant { 
   color: #8b5cf6; 
 }
 

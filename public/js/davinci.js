@@ -23,6 +23,21 @@ function getUserName() {
   return 'Creator';
 }
 
+function getAssistantName() {
+  if (typeof window.getAssistantName === 'function') {
+    const value = String(window.getAssistantName() || '').trim();
+    if (value) return value;
+  }
+  return 'Assistant';
+}
+
+function getAssistantEmoji() {
+  if (typeof window.getAssistantEmoji === 'function') {
+    return String(window.getAssistantEmoji() || '').trim();
+  }
+  return '🤖';
+}
+
 // ============ Section Switching ============
 
 function switchSection(section) {
@@ -421,7 +436,7 @@ function renderDavinciChat() {
     const userName = getUserName();
     container.innerHTML = `
       <div class="chat-welcome">
-        <p>🌺 <strong>Hey ${escapeHtml(userName)}!</strong> Ask me anything about ${editor.name}. I've got your ${editor.name} tips doc loaded, so I know what you already know.</p>
+        <p>${getAssistantEmoji() ? `${escapeHtml(getAssistantEmoji())} ` : ''}<strong>Hey ${escapeHtml(userName)}!</strong> Ask ${escapeHtml(getAssistantName())} anything about ${editor.name}. I've got your ${editor.name} tips doc loaded, so I know what you already know.</p>
       </div>
     `;
     return;

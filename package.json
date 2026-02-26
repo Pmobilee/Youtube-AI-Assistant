@@ -7,7 +7,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
-  "author": "Kona",
+  "author": "YAA Bot",
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.73.0",

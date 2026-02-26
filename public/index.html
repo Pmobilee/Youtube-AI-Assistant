@@ -83,7 +83,7 @@
         <!-- Left Pane: Chat -->
         <div class="pane chat-pane" id="chat-pane">
           <div class="pane-header">
-            <h3>💬 Chat with Kona</h3>
+            <h3 id="assistant-chat-title">💬 Chat with Assistant</h3>
             <button class="btn btn-ghost btn-sm" id="upload-btn" title="Upload image">📎</button>
             <button class="btn btn-ghost btn-sm" id="clear-chat-btn" onclick="clearChat()" title="Clear chat history">🗑️</button>
             <input type="file" id="file-input" accept="image/*" style="display:none">
@@ -95,7 +95,7 @@
           </div>
           <div class="chat-messages" id="chat-messages">
             <div class="chat-welcome">
-              <p>🌺 <strong>Kona here!</strong> Ready to work on this video together. What are we making?</p>
+              <p>🤖 <strong>Assistant here!</strong> Ready to work on this video together. What are we making?</p>
             </div>
           </div>
           <div id="uploaded-images" class="uploaded-images"></div>
@@ -107,7 +107,7 @@
             <button id="compact-chat-btn" class="btn btn-ghost btn-sm" title="Compact older chat context">🧹 Compact</button>
           </div>
           <div class="chat-input-container">
-            <textarea id="chat-input" placeholder="Message Kona..." rows="1"></textarea>
+            <textarea id="chat-input" placeholder="Message Assistant..." rows="1"></textarea>
             <button id="send-btn" class="btn btn-primary btn-send">Send</button>
           </div>
         </div>
@@ -285,7 +285,7 @@
         <div class="davinci-header">
           <div>
             <h2 id="editor-chat-title">💬 DaVinci Chat</h2>
-            <p id="editor-chat-subtitle" class="subtitle">Ask Kona about DaVinci Resolve</p>
+            <p id="editor-chat-subtitle" class="subtitle">Ask Assistant about DaVinci Resolve</p>
           </div>
           <div class="davinci-actions">
             <div class="token-bar davinci-token-bar" id="davinci-token-bar">
@@ -298,11 +298,11 @@
         </div>
         <div class="davinci-chat-messages" id="davinci-chat-messages">
           <div class="chat-welcome">
-            <p id="editor-chat-welcome">🌺 <strong>Hey there!</strong> Ask me anything about DaVinci Resolve. I’ve got your tips doc loaded, so I know what you already know.</p>
+            <p id="editor-chat-welcome">🤖 <strong>Hey there!</strong> Ask Assistant anything about DaVinci Resolve. I’ve got your tips doc loaded, so I know what you already know.</p>
           </div>
         </div>
         <div class="davinci-chat-input">
-          <textarea id="davinci-input" placeholder="Ask about DaVinci Resolve..." rows="1"></textarea>
+          <textarea id="davinci-input" placeholder="Ask Assistant about DaVinci Resolve..." rows="1"></textarea>
           <button id="davinci-send-btn" class="btn btn-primary btn-send">Send</button>
         </div>
       </div>
