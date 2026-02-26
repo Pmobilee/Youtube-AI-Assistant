@@ -42,6 +42,8 @@ build_dir.mkdir(parents=True)
 
 include_paths = [
     'server.js',
+    'src',
+    'references',
     'package.json',
     'package-lock.json',
     '.env.example',

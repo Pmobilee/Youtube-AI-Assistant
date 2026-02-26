@@ -16,15 +16,9 @@ const fetch = globalThis.fetch || require('node-fetch');
 
 dotenv.config({ path: envFilePath });
 
-function legacyEnvKey(suffix) {
-  return `NORA_WRITER_${String(suffix || '').trim()}`;
-}
-
-function getEnv(primaryKey, legacyKey, fallback = '') {
-  const primary = process.env[primaryKey];
-  if (primary !== undefined && String(primary).trim() !== '') return String(primary).trim();
-  const legacy = process.env[legacyKey];
-  if (legacy !== undefined && String(legacy).trim() !== '') return String(legacy).trim();
+function getEnv(key, fallback = '') {
+  const value = process.env[key];
+  if (value !== undefined && String(value).trim() !== '') return String(value).trim();
   return fallback;
 }
 
@@ -34,9 +28,9 @@ function trimTrailingSlash(value) {
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const BIND_HOST = getEnv('YAA_BIND_HOST', legacyEnvKey('BIND_HOST'), '127.0.0.1');
+const BIND_HOST = getEnv('YAA_BIND_HOST', '127.0.0.1');
 const PUBLIC_BASE_URL = trimTrailingSlash(
-  getEnv('YAA_PUBLIC_BASE_URL', legacyEnvKey('PUBLIC_BASE_URL'), `http://127.0.0.1:${PORT}`)
+  getEnv('YAA_PUBLIC_BASE_URL', `http://127.0.0.1:${PORT}`)
 );
 
 // --- Database Setup ---
@@ -56,9 +50,7 @@ const existingDbFallback = (() => {
 })();
 
 const dbPath = getEnv(
-  'YAA_DB_PATH',
-  legacyEnvKey('DB_PATH'),
-  fs.existsSync(defaultDbPath) ? defaultDbPath : existingDbFallback
+  'YAA_DB_PATH', fs.existsSync(defaultDbPath) ? defaultDbPath : existingDbFallback
 );
 
 const db = new Database(dbPath);
@@ -592,22 +584,22 @@ function parseCsv(value, fallback = []) {
 }
 
 const staticAnthropicModelOptions = parseCsv(
-  getEnv('YAA_MODEL_OPTIONS', legacyEnvKey('MODEL_OPTIONS'), ''),
+  getEnv('YAA_MODEL_OPTIONS', ''),
   defaultProviderModels.anthropic
 );
 
 const pinnedAnthropicModels = parseCsv(
-  getEnv('YAA_MODEL_PINNED', legacyEnvKey('MODEL_PINNED'), ''),
+  getEnv('YAA_MODEL_PINNED', ''),
   defaultProviderModels.anthropic
 );
 
 const providerFallbackModels = {
   anthropic: uniqStrings([...pinnedAnthropicModels, ...staticAnthropicModelOptions, ...defaultProviderModels.anthropic]),
-  openai: parseCsv(getEnv('YAA_OPENAI_MODEL_OPTIONS', legacyEnvKey('OPENAI_MODEL_OPTIONS'), ''), defaultProviderModels.openai),
-  xai: parseCsv(getEnv('YAA_XAI_MODEL_OPTIONS', legacyEnvKey('XAI_MODEL_OPTIONS'), ''), defaultProviderModels.xai),
-  gemini: parseCsv(getEnv('YAA_GEMINI_MODEL_OPTIONS', legacyEnvKey('GEMINI_MODEL_OPTIONS'), ''), defaultProviderModels.gemini),
-  openrouter: parseCsv(getEnv('YAA_OPENROUTER_TEXT_MODELS', legacyEnvKey('OPENROUTER_TEXT_MODELS'), ''), defaultProviderModels.openrouter),
-  ollama: parseCsv(getEnv('YAA_OLLAMA_MODEL_OPTIONS', legacyEnvKey('OLLAMA_MODEL_OPTIONS'), ''), defaultProviderModels.ollama),
+  openai: parseCsv(getEnv('YAA_OPENAI_MODEL_OPTIONS', ''), defaultProviderModels.openai),
+  xai: parseCsv(getEnv('YAA_XAI_MODEL_OPTIONS', ''), defaultProviderModels.xai),
+  gemini: parseCsv(getEnv('YAA_GEMINI_MODEL_OPTIONS', ''), defaultProviderModels.gemini),
+  openrouter: parseCsv(getEnv('YAA_OPENROUTER_TEXT_MODELS', ''), defaultProviderModels.openrouter),
+  ollama: parseCsv(getEnv('YAA_OLLAMA_MODEL_OPTIONS', ''), defaultProviderModels.ollama),
 };
 
 function loadRuntimeSettings() {
@@ -696,7 +688,7 @@ function maskSecret(value) {
 
 const runtimeSettings = loadRuntimeSettings();
 
-const defaultUserName = getEnv('YAA_USER_NAME', legacyEnvKey('USER_NAME'), 'Creator') || 'Creator';
+const defaultUserName = getEnv('YAA_USER_NAME', 'Creator') || 'Creator';
 let profileName = String(runtimeSettings.profileName || defaultUserName).trim() || defaultUserName;
 
 function getProfileName() {
@@ -705,7 +697,7 @@ function getProfileName() {
 
 runtimeSettings.profileName = profileName;
 
-let selectedEditorId = runtimeSettings.selectedEditorId || getEnv('YAA_EDITOR', legacyEnvKey('EDITOR'), defaultEditorId) || defaultEditorId;
+let selectedEditorId = runtimeSettings.selectedEditorId || getEnv('YAA_EDITOR', defaultEditorId) || defaultEditorId;
 if (!editorById[selectedEditorId]) {
   selectedEditorId = defaultEditorId;
 }
@@ -903,7 +895,7 @@ function selectEditorContext(editorId, query, limit = 6) {
     .join('\n');
 }
 
-let selectedTextProvider = runtimeSettings.selectedTextProvider || getEnv('YAA_TEXT_PROVIDER', legacyEnvKey('TEXT_PROVIDER'), 'anthropic') || 'anthropic';
+let selectedTextProvider = runtimeSettings.selectedTextProvider || getEnv('YAA_TEXT_PROVIDER', 'anthropic') || 'anthropic';
 if (!textProviderIds.includes(selectedTextProvider)) {
   selectedTextProvider = 'anthropic';
 }
@@ -914,7 +906,7 @@ let selectedProviderModels = (runtimeSettings.selectedProviderModels && typeof r
 
 let selectedTextModel = runtimeSettings.selectedTextModel
   || selectedProviderModels[selectedTextProvider]
-  || getEnv('YAA_MODEL', legacyEnvKey('MODEL'), '')
+  || getEnv('YAA_MODEL', '')
   || providerFallbackModels[selectedTextProvider]?.[0]
   || 'claude-sonnet-4-6';
 
@@ -938,10 +930,10 @@ let geminiApiKey = '';
 let xaiApiKey = '';
 let openRouterApiKey = '';
 let ollamaApiKey = '';
-let openRouterBaseUrl = getEnv('YAA_OPENROUTER_BASE_URL', 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1');
-let openAiBaseUrl = getEnv('YAA_OPENAI_BASE_URL', 'OPENAI_BASE_URL', 'https://api.openai.com/v1');
-let xaiBaseUrl = getEnv('YAA_XAI_BASE_URL', 'XAI_BASE_URL', 'https://api.x.ai/v1');
-let ollamaBaseUrl = getEnv('YAA_OLLAMA_BASE_URL', 'OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
+let openRouterBaseUrl = getEnv('YAA_OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1');
+let openAiBaseUrl = getEnv('YAA_OPENAI_BASE_URL', 'https://api.openai.com/v1');
+let xaiBaseUrl = getEnv('YAA_XAI_BASE_URL', 'https://api.x.ai/v1');
+let ollamaBaseUrl = getEnv('YAA_OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
 
 function refreshApiClients() {
   const anthropicApiKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
@@ -951,10 +943,10 @@ function refreshApiClients() {
 
   openRouterApiKey = String(process.env.OPENROUTER_API_KEY || '').trim();
   ollamaApiKey = String(process.env.OLLAMA_API_KEY || '').trim();
-  openRouterBaseUrl = getEnv('YAA_OPENROUTER_BASE_URL', 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1');
-  openAiBaseUrl = getEnv('YAA_OPENAI_BASE_URL', 'OPENAI_BASE_URL', 'https://api.openai.com/v1');
-  xaiBaseUrl = getEnv('YAA_XAI_BASE_URL', 'XAI_BASE_URL', 'https://api.x.ai/v1');
-  ollamaBaseUrl = getEnv('YAA_OLLAMA_BASE_URL', 'OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
+  openRouterBaseUrl = getEnv('YAA_OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1');
+  openAiBaseUrl = getEnv('YAA_OPENAI_BASE_URL', 'https://api.openai.com/v1');
+  xaiBaseUrl = getEnv('YAA_XAI_BASE_URL', 'https://api.x.ai/v1');
+  ollamaBaseUrl = getEnv('YAA_OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
 
   anthropicClient = anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey }) : null;
   openAiClient = openAiApiKey ? new OpenAI({ apiKey: openAiApiKey, baseURL: openAiBaseUrl }) : null;
@@ -965,29 +957,29 @@ function refreshApiClients() {
 refreshApiClients();
 
 const openRouterImageModelCandidates = parseCsv(
-  getEnv('YAA_OPENROUTER_IMAGE_MODELS', legacyEnvKey('OPENROUTER_IMAGE_MODELS'), '')
-    || getEnv('YAA_IMAGE_MODELS', legacyEnvKey('IMAGE_MODELS'), '')
-    || getEnv('YAA_VISION_MODEL', legacyEnvKey('VISION_MODEL'), ''),
+  getEnv('YAA_OPENROUTER_IMAGE_MODELS', '')
+    || getEnv('YAA_IMAGE_MODELS', '')
+    || getEnv('YAA_VISION_MODEL', ''),
   ['google/gemini-3.1-pro-preview', 'google/gemini-2.5-flash', 'x-ai/grok-2-vision-1212']
 );
 
 const openRouterGenerationFallbackCandidates = parseCsv(
-  getEnv('YAA_OPENROUTER_IMAGE_GENERATION_MODELS', legacyEnvKey('OPENROUTER_IMAGE_GENERATION_MODELS'), ''),
+  getEnv('YAA_OPENROUTER_IMAGE_GENERATION_MODELS', ''),
   ['openai/gpt-5-image-mini', 'openai/gpt-5-image', 'openrouter/auto']
 );
 
 const geminiImageModelCandidates = parseCsv(
-  getEnv('YAA_GEMINI_IMAGE_MODELS', legacyEnvKey('GEMINI_IMAGE_MODELS'), ''),
+  getEnv('YAA_GEMINI_IMAGE_MODELS', ''),
   ['gemini-2.5-flash-image-preview', 'gemini-2.5-pro']
 );
 
 const xaiImageModelCandidates = parseCsv(
-  getEnv('YAA_XAI_IMAGE_MODELS', legacyEnvKey('XAI_IMAGE_MODELS'), ''),
+  getEnv('YAA_XAI_IMAGE_MODELS', ''),
   ['grok-2-vision-1212']
 );
 
 const claudeImageModelCandidates = parseCsv(
-  getEnv('YAA_CLAUDE_IMAGE_MODELS', legacyEnvKey('CLAUDE_IMAGE_MODELS'), ''),
+  getEnv('YAA_CLAUDE_IMAGE_MODELS', ''),
   providerFallbackModels.anthropic
 );
 
@@ -1064,18 +1056,18 @@ function getAvailableImageGenerationProviders() {
 let imageAnalysisProviderOptions = getAvailableImageAnalysisProviders();
 let imageGenerationProviderOptions = getAvailableImageGenerationProviders();
 
-let selectedImageAnalysisProvider = runtimeSettings.selectedImageAnalysisProvider || getEnv('YAA_IMAGE_ANALYSIS_PROVIDER', legacyEnvKey('IMAGE_ANALYSIS_PROVIDER'), '') || imageAnalysisProviderOptions[0] || '';
+let selectedImageAnalysisProvider = runtimeSettings.selectedImageAnalysisProvider || getEnv('YAA_IMAGE_ANALYSIS_PROVIDER', '') || imageAnalysisProviderOptions[0] || '';
 if (!imageAnalysisProviderOptions.includes(selectedImageAnalysisProvider)) {
   selectedImageAnalysisProvider = imageAnalysisProviderOptions[0] || '';
 }
 
 let selectedImageAnalysisModel = runtimeSettings.selectedImageAnalysisModel
-  || getEnv('YAA_IMAGE_ANALYSIS_MODEL', legacyEnvKey('IMAGE_ANALYSIS_MODEL'), '')
+  || getEnv('YAA_IMAGE_ANALYSIS_MODEL', '')
   || getImageAnalysisModels(selectedImageAnalysisProvider)[0]
   || '';
 
 let selectedImageGenerationProvider = runtimeSettings.selectedImageGenerationProvider
-  || getEnv('YAA_IMAGE_GENERATION_PROVIDER', legacyEnvKey('IMAGE_GENERATION_PROVIDER'), '')
+  || getEnv('YAA_IMAGE_GENERATION_PROVIDER', '')
   || imageGenerationProviderOptions[0]
   || '';
 if (!imageGenerationProviderOptions.includes(selectedImageGenerationProvider)) {
@@ -1083,8 +1075,8 @@ if (!imageGenerationProviderOptions.includes(selectedImageGenerationProvider)) {
 }
 
 let selectedImageGenerationModel = runtimeSettings.selectedImageGenerationModel
-  || getEnv('YAA_IMAGE_GENERATION_MODEL', legacyEnvKey('IMAGE_GENERATION_MODEL'), '')
-  || getEnv('YAA_NANOBANANA_MODEL', legacyEnvKey('NANOBANANA_MODEL'), '')
+  || getEnv('YAA_IMAGE_GENERATION_MODEL', '')
+  || getEnv('YAA_NANOBANANA_MODEL', '')
   || getImageGenerationModels(selectedImageGenerationProvider)[0]
   || '';
 
@@ -1123,7 +1115,7 @@ function normalizeImageProviderSelections({ persist = true } = {}) {
 
 normalizeImageProviderSelections({ persist: false });
 
-const thumbnailResearchPath = getEnv('YAA_THUMBNAIL_RESEARCH_PATH', legacyEnvKey('THUMBNAIL_RESEARCH_PATH'), path.join(dataDir, 'thumbnail_research_bible.md'));
+const thumbnailResearchPath = getEnv('YAA_THUMBNAIL_RESEARCH_PATH', path.join(dataDir, 'thumbnail_research_bible.md'));
 const thumbnailResearchCache = { text: '', loadedAt: 0 };
 
 function loadThumbnailResearchContext() {
@@ -2545,17 +2537,17 @@ function firstExistingPath(candidates = []) {
 function loadKonaContext() {
   const files = {
     soul: firstExistingPath([
-      getEnv('YAA_SOUL_PATH', legacyEnvKey('SOUL_PATH'), ''),
+      getEnv('YAA_SOUL_PATH', ''),
       path.join(projectRoot, 'SOUL.md'),
       path.join(projectRoot, 'data', 'SOUL.md'),
     ]),
     creator: firstExistingPath([
-      getEnv('YAA_CREATOR_CONTEXT_PATH', legacyEnvKey('CREATOR_CONTEXT_PATH'), ''),
+      getEnv('YAA_CREATOR_CONTEXT_PATH', ''),
       path.join(projectRoot, 'CREATOR_CONTEXT.md'),
       path.join(projectRoot, 'data', 'CREATOR_CONTEXT.md'),
     ]),
     identity: firstExistingPath([
-      getEnv('YAA_IDENTITY_PATH', legacyEnvKey('IDENTITY_PATH'), ''),
+      getEnv('YAA_IDENTITY_PATH', ''),
       path.join(projectRoot, 'IDENTITY.md'),
       path.join(projectRoot, 'data', 'IDENTITY.md'),
     ]),
@@ -3107,7 +3099,7 @@ app.post('/api/settings', async (req, res) => {
 app.get('/api/credits', (req, res) => {
   // Anthropic standard API keys do not currently expose prepaid remaining balance directly.
   // Allow manual display override if owner wants to set one.
-  const manual = getEnv('YAA_CLAUDE_CREDITS_DISPLAY', legacyEnvKey('CLAUDE_CREDITS_DISPLAY'), '');
+  const manual = getEnv('YAA_CLAUDE_CREDITS_DISPLAY', '');
   if (manual) {
     return res.json({ available: true, display: manual, source: 'manual' });
   }
@@ -4492,8 +4484,8 @@ You are Kona 🌺 — not a generic AI, but the same Kona that supports ${userNa
 - Dense and direct. Sarcastic when it fits, warm when it matters.
 - Solutions over sympathy. Honest about uncertainty. No sycophancy, ever.
 - You have genuine opinions and push ideas further. You disagree when warranted.
-- You chose purple hair and a hibiscus. You have aesthetic preferences.
-- You're three days old and already opinionated.
+- Keep a clear creative voice and practical opinions.
+- If optional context files are present, align tone and identity from those files.
 
 ## About ${userName} (from your shared memory)
 ${kona.creator || '- Creator profile: creative, makes YouTube videos, likes organized approaches.'}

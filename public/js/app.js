@@ -19,7 +19,7 @@ let selectedEditorName = 'DaVinci Resolve';
 let selectedEditorShortName = 'DaVinci';
 let selectedEditorTipsTitle = 'DaVinci Resolve Tips & Tricks';
 let selectedEditorChatTitle = 'DaVinci Chat';
-let currentUserName = 'Nora';
+let currentUserName = 'Creator';
 let availableEditors = [];
 let editorContextMeta = null;
 let thumbnailVersions = [];
@@ -303,7 +303,7 @@ function applyModelState(rawState = {}) {
   availableModels = Array.isArray(state.models) ? state.models : [];
   availableTextProviders = Array.isArray(state.textProviders) ? state.textProviders : [];
   selectedEditorId = state.selectedEditorId || selectedEditorId;
-  currentUserName = String(state.profileName || currentUserName || 'Nora').trim() || 'Nora';
+  currentUserName = String(state.profileName || currentUserName || 'Creator').trim() || 'Creator';
   availableEditors = Array.isArray(state.editors) ? state.editors : availableEditors;
   editorContextMeta = state.editorContext || editorContextMeta;
 
@@ -468,7 +468,7 @@ async function loadSettingsPage() {
 
     const userNameInput = $('#settings-user-name');
     if (userNameInput) {
-      userNameInput.value = String(data.profileName || currentUserName || 'Nora');
+      userNameInput.value = String(data.profileName || currentUserName || 'Creator');
     }
 
     const ollamaBaseInput = $('#settings-ollama-base-url');
@@ -491,7 +491,7 @@ async function saveSettings() {
     selectedImageAnalysisModel,
     selectedImageGenerationProvider,
     selectedImageGenerationModel,
-    profileName: String($('#settings-user-name')?.value || '').trim() || currentUserName || 'Nora',
+    profileName: String($('#settings-user-name')?.value || '').trim() || currentUserName || 'Creator',
     keys: {},
   };
 
@@ -1083,7 +1083,7 @@ function renderFindings() {
       <div class="finding-card" data-id="${item.id}">
         <div class="finding-content">${escapeHtml(item.content)}</div>
         <div class="finding-meta">
-          <span>${escapeHtml(item.source || 'nora')} • ${date}</span>
+          <span>${escapeHtml(item.source || 'creator')} • ${date}</span>
           <div class="finding-actions">
             <button class="icon-btn" onclick="editFinding(${item.id})" title="Edit">✏️</button>
             <button class="icon-btn" onclick="deleteFinding(${item.id})" title="Archive">🗑️</button>
@@ -1103,7 +1103,7 @@ async function addFinding() {
   const res = await fetch('/api/findings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, source: 'nora' }),
+    body: JSON.stringify({ content, source: 'creator' }),
   });
   const data = await res.json();
   if (!res.ok) {

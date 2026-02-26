@@ -10,7 +10,7 @@ function createFindingsRouter({ db }) {
 
   router.post('/', (req, res) => {
     const content = String(req.body?.content || '').trim();
-    const source = String(req.body?.source || 'nora').trim() || 'nora';
+    const source = String(req.body?.source || 'creator').trim() || 'creator';
     if (!content) return res.status(400).json({ error: 'content is required' });
 
     try {

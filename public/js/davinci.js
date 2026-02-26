@@ -20,7 +20,7 @@ function getUserName() {
     const value = String(window.getCurrentUserName() || '').trim();
     if (value) return value;
   }
-  return 'Nora';
+  return 'Creator';
 }
 
 // ============ Section Switching ============
