@@ -285,10 +285,12 @@ function applyEditorBranding() {
   window.getActiveEditorShortName = () => selectedEditorShortName;
   window.getActiveEditorTipsTitle = () => selectedEditorTipsTitle;
   window.getActiveEditorChatTitle = () => selectedEditorChatTitle;
-  window.getCurrentUserName = () => currentUserName;
-  window.getAssistantName = () => getAssistantName();
-  window.getAssistantEmoji = () => getAssistantEmoji();
-  window.getAssistantDisplayName = () => getAssistantDisplayName();
+  window.getCurrentUserName = () => String(currentUserName || 'Creator');
+  // Return raw values here (not helper calls) to avoid recursion if other scripts
+  // redefine global helper names in older cached bundles.
+  window.getAssistantName = () => String(assistantName || 'Assistant');
+  window.getAssistantEmoji = () => String(assistantEmoji || '');
+  window.getAssistantDisplayName = () => String(assistantDisplayName || assistantName || 'Assistant');
 }
 
 function normalizeModelState(data = {}) {
