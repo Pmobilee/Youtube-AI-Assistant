@@ -859,7 +859,7 @@ async function refreshEditorContext(editorId, { force = false } = {}) {
     try {
       const response = await fetch(source.url, {
         headers: {
-          'User-Agent': 'YAA-Docs-Fetcher/1.0 (+https://github.com/Pmobilee/Youtube-AI-Assistant)',
+          'User-Agent': 'YAA-Docs-Fetcher/1.0',
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
       });
